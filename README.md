@@ -30,6 +30,12 @@ Useful concepts:
 
     Transition probabilities P: transition probabilties between the states.   
 
+The program uses mutiple cores for speeding up computation. Set 
+
+      nProc = 10
+
+in POMM.py if you have 10 cores on your CPU, for example. 
+
 Please cite the paper:
 
     Jiali Lu, Sumithra Surendralal, Kristofer E Bouchard, and Dezhe Z. Jin, 
