@@ -1,8 +1,10 @@
 A partially observable Markov model (POMM) can capture context-dependent transitions between symbols in sequences. 
-For example, the syllable sequences of Bengalese finches can be described using POMMs (Jin & Kozhevnikov, PLoS Comput Biol, 2011; Lu et al., J Neurosci, 2025).
+For example, the syllable sequences of Bengalese finches can be described using POMMs 
+(Jin & Kozhevnikov, PLoS Comput Biol, 2011; Lu et al., J Neurosci, 2025).
 Here is the code used in Lu et al. (J Neurosci, 2025).
 
-A POMM is a Markov transition model defined in a state space. To capture context dependence, some symbols must be represented by multiple states. 
+A POMM is a Markov transition model defined in a state space. To capture context dependence, 
+some symbols must be represented by multiple states. 
 This many-to-one mapping from states to symbols is characteristic of POMMs. 
 The goal of the code is to determine the minimum number of states required for each symbol.
 
@@ -26,7 +28,8 @@ Useful concepts:
     This specificies the symbol associated with each state. 
     0:  start state
     -1: end state
-    In this example 'A', 'B', 'D', 'E' are associated with one state each. 'C' is associated with two states. 
+    In this example 'A', 'B', 'D', 'E' are associated with one state each. 
+    'C' is associated with two states. 
 
     Transition probabilities P: transition probabilties between the states.   
 
