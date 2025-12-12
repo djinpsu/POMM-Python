@@ -39,6 +39,9 @@ The program uses mutiple cores for speeding up computation. Set
 
 in POMM.py if you have 10 cores on your CPU, for example. 
 
+Another example is coolingBengaleseFinch.py. This file takes sequences in the file 150mA_u_left_tl.annot_observed_sequences.txt and learns POMM. 
+The user can dapat this code to use their own sequences. 
+
 The inference algorithm was developed by Dezhe Jin, and should be referred to as the Jin algorithm for inferring POMM. Please cite the paper:
 
     Jiali Lu, Sumithra Surendralal, Kristofer E Bouchard, and Dezhe Z. Jin, 
