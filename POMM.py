@@ -1,47 +1,40 @@
-"""
+'''
+ This python library contains functions for deriving POMM from observed seqeunces
+ Useful concepts
+   state vector: specifies symbols associated with the states.
+       The first is the start state 0, and the second is the end state -1, and the results are the other states. 
+       for example, S = [0, -1, 'A', 'B', 'A'] 
+   transition probability P of the state vectors. 
+       This specifes the transition probabilities between the states. 
 
-    Written by 
-    
-        Dezhe Jin 
-        Department of Physics, Penn State 
-        dzj2@psu.edu
-        
-    Updated 4/14/2022. 
-    Website: http://www.dezhejinlab.org
+ Written by Dezhe Jin, Department of Physics, Penn State, dzj2@psu.edu, 9/9/2015, updated 4/14/2022. 
+ Updates
+    2025-12-10  plotTransitionDiagram(S,P,Pcut=0.01,filenameDot='temp.dot',filenamePDF='temp.pdf',removeUnreachable=False,markedStates=[],labelStates=0)
+                    changd output to PDF instead of PS file format. filenamePDF='temp.pdf'
+                
+                getNumericalSequencesNonRepeat(seqs,syllableLabels)
+                    changed return. Now returns numericSeqs, repeatNumSeqs, Syms, Syms2
+                    Here Syms is a dictionary converting syms to numerics, and Syms2 converts numerics to syms. 
 
+   
+'''
 
-    This python library contains functions for deriving POMM from observed seqeunces.
-    
-    Useful concepts
-        state vector: specifies symbols associated with the states.
-            The first is the start state 0, and the second is the end state -1, and the results are the other states. 
-            for example, S = [0, -1, 'A', 'B', 'A'] 
+place='MacAir'  # O, office, MC, mac, other group machines, G, MacAir, macbook air
+#place='G'  # O, office, MC, mac, other group machines, G, MacAir, macbook air
+#place=''
 
-        transition probability P: transition probabilties between the states.  
-
-    Compile the C library libPOMMCuda.so using commond
-
-        make
-
-    Please cite paper: 
-
-        Jiali Lu, Sumithra Surendralal, Kristofer E Bouchard, and Dezhe Z. Jin, 
-        "Partially observable Markov models inferred using statistical tests reveal context-dependent syllable transitions in Bengalese finch songs", 
-        Journal of Neuroscience, 8, e0522242024 (2025)   
-        
-        @article{lu2025partially,
-          title={Partially observable Markov models inferred using statistical tests reveal context-dependent syllable transitions in Bengalese finch songs},
-          author={Lu, Jiali and Surendralal, Sumithra and Bouchard, Kristofer E and Jin, Dezhe Z},
-          journal={Journal of Neuroscience},
-          year={2025},
-          publisher={Society for Neuroscience}
-        }         
-    
-"""
-
-
-dirCodes = './'     # this is where libPOMM.c is located.     
-nProc = 2           # number of cores used, increase if more cores are available.   
+if place == 'MacAir':
+    dirCodes = '/Users/dzj2/projects/POMMPython/'       # mac directory for the c library. 
+    nProc = 2   
+if place == 'MC':
+    dirCodes = '/Users/dezhejin/projects/POMMPython/'       # mac directory for the c library. 
+    nProc = 8
+elif place == 'O':
+    dirCodes = '/home/dzj2/projects/POMMPython/'            # Office machine directory for the c library. 
+    nProc = 18
+elif place == 'G':                                          # hodgkin, neuron 
+    dirCodes = '/home/dzj2/projects/POMMPython/'    
+    nProc = 40
 
 
 from subprocess import call
@@ -216,329 +209,337 @@ pTolence = 1e-5                 # smallest transition probability.
    Inputs:
        S, state vector
        P, transition probabilities
-       osIn, observed sequence
-       nSample, number of samples, default 10000
-       nProc, number of processors used
-   Returns:
-       pv, p-value of the observed sequence on the model.
-       PBs, modified sequence completeness sampled
-       PbT, modified sequence completeness of the observed sequences
-
-
-   getPVSampledSeqsPOMMnoPbDistr(S, P, osIn, nSample = 10000, nProc=2):
-   get p-value of the observed sequences against the Pb of the sampled sequences for a given POMM. 
-   To save memory usage, the PBs are not stored. 
-   Instead, the number of times sampled Pb is larger that PbT (+1e-10 to break ties) are recorded. 
-   These are used to compute pv.
-   Inputs:
-       S, state vector
-       P, transition probabilities
-       osIn, observed sequence
-       nSample, number of samples, default 10000
-       nProc, number of processors used
-   Returns:
-       pv, p-value of the observed sequence on the model.
-       PbT, sequence completeness of the observed sequences. 
-
-
-   getUniqueSequences(osIn)
-   Input:
-       osIn, list of sequences
-   Returns:
-       osU, unique sequences
-       osK, number of times the unique sequences appear
-       symU, symbols.
-
-
-   BWPOMMCParallel(S,osInO,C=[],maxSteps=5000,pTol=1e-6, nRerun=100, nProc = 2)
-   Parallel version of BWPOMM, calling C function BWPOMMC from libPOMM.h   
-   Inputs:
-       S, state vector
-       osInO, observed sequences
-       C, connectivity matrix, 1 or 0, those with 0 are cut.
-       maxSteps, maximum number of steps for updating the transition probabilities
-       pTol, tolerance for the transition probabilities
-       nRerun, number of times the algorithm is run. 
-       nProc, number of processors used. 
-   Returns:
-       P, computed transition matrix
-       MLmax, maximum log likelihood
-       Pc, sequence completeness of the input sequences on the model
-       stdML, standard deviation of the maximum likelihood achieved for all runs. 
-       MK, list of maximum likelihoods
-
-
-   getUniuqeSequencesProbConfidenceIntervals(osK, alpha)
-   get the confidence intervals of the probabilities of unique sequences
-   Input
-       osK - counts of the occurances of unique sequences
-       alpha - significance level
-   Output
-       pL - array, lower bounds of the confidence intervals
-       pU - array, upper bounds of the confidence intervals. 
-
-
-   computeLogLike(S,P,osU,osK)
-   Compute log likelihood of the seqeucens given the POMM. 
-   inputs
-       S, states
-       P, transition matrix
-       osU, unique sequences
-       osK, counts. 
-   returns
-       llk, log likelihood.
-
-
-   normP(P)
-   normalize the transition matrix. Enforce the fact that the first row is the start state, and the second row is the end state. 
-
-
-  generateSequencePOMM(S,P,nseq)
-  given the state transition matrix, generate the observed seqeunces.
-  Assumptionm, S[0], S[1] are the start and the end states. 
-  Inputs:
-      S, state vector
-      P, transition probability
-      nseq, number of sequences to be generated
-  Output:
-      gs, generated sequences
-
-  printP(P)
-  print the transition matrix in a nice form.
-
-  
-  getSequenceProbModel(S,P,osIn,osU = [])
-  Given the model, compute the probabilities of unique sequences in osIn. 
-  Input parameters:
-      S, states
-      P, transition probabilities
-      osIn, observed sequences.
-      osU, unique sequences in osIn. If empty, computed. 
-  Returns osU, PU
-      osU, unique sequences
-      PU, probabilities of unique sequences.  
-
-  computeSequenceCompleteness(S,P,osIn,osU = [])
-  compute the sum of the probabilities of all unique sequences given the state machine.   
-  Inputs
-      S, states
-      P, transition probabilities
-      osIn, observed sequences.
-      osU, unique sequences in osIn. If empty, computed. 
-  Outputs
-      Pc, sequence completeness
-      Ps, probabilities of the sequences
-
-
-  computeSequenceProb(ss, S, P)
-  compute the probability of the sequence given the model
-  Inputs: 
-      ss, sequence
-      S, state vector
-      P, transition matrix
-  Returns
-      ps, probability of the sequence. 
-
-
-  stateSeq, prob = SeqcomputeMostProbableStateSequence(S,P,seq)
-
-  compute the most likely path of the state given the sequence
-  Input:
-      S - state vector
-      P - transition probabilities
-      seq - sequence
-  Return:
-      stateSeq - the most probable state sequence
-      prob - probability of the most probable sequence
-
-
-  SampleTransitionCounts(P,N)
-  This function returns the number of transition sampled with transition probability P.
-  The total number of sampling is N.  
-  Inputs: 
-      P, 1d array, transition probabilities
-      N, number of transitions sampled.
-  Returns"
-      C, 1d array, number of times each choice is selected. 
-
-
-  ConstructMarkovModel(osIn,syms,pcut = 0.0)
-  This function constructs Markov model 
-  Inputs:
-      osIn, List of input sequences
-      syms, symbols in the seuqencs       
-  return 
-      P, transition matrix 
-      S, state vector
-      C, counts of transitions
-
-  CreateMarkovModelFanout(nSyms,nFanOut)
-  create a Markov model with nSyms, with the fan out from each state maxed to nFanout. 
-  the transition probabilities are equal for each transition. 
-  Inputs
-      nSyms - number of symbols
-      nFanOut - maximum number of fan out. the number of fan out can be small if some unreachable states are deleted.
-  returns 
-      S, state vector 
-      P, transition matrix
-
-  CreatePOMMFanout(nSyms,nExtra,nFanOut)
-  create a POMM with nSyms, with the fan out from each state maxed to nFanout. 
-  the transition probabilities are equal for each transition. 
-  Inpits:
-      nSyms - number of symbols
-      nExtra - number of extra states for each symbol
-      nFanOut - maximum number of fan out. the number of fan out can be small if some unreachable states are deleted.
-  Returns: 
-      S, state vector 
-      P, transition matrix
-  
-  removeUnreachableStates(S,P)
-  remove states that are unreachiable from the start state. Keep the transitions to the end states.   
-  Inputs:
-      S, P
-  Returns:
-      S, P
-
-  deleteTransitionSmallProb(S,P,Pcut = 0.01)
-  detete connections with small transition probabilities.     
-  Inputs:
-      S, state vector
-      P, transition matrix
-      Pcut, transition probability threshold for cutting. 
-
-  convertToNumericalSequences(seqsIn,symsIn)
-  convert sequences into numerical sequences with syms from 1 - n, where n is the number of symbols.
-  Inputs:
-      seqsIn, input sequences, array of arrays
-      symsIn, symbols in the input sequences, array
-  returns:
-      seqs, numerical sequences
-      syms,numerical syms corresponding to symsIn, basically the numerical order of a symbol in symsIn
-
-  getNumericalSequencesNonRepeat(seqs,syllableLabels)
-  Get non-repeat sequences in numberical form read for analysis from strings. 
-  Inputs
-      seqs, sequences
-      syllableLabels, labels of syllables in the sequences
-  returns 
-      osIn, numerical sequences generated
-      repeatNumSeqs, repeat numbers of each syllable in the sequence. 
-      symsNumeric, numerical symbol.  
-
-  plotTransitionDiagram(S,P,Pcut=0.01,filenameDot='temp.dot',filenamePS='temp.ps',removeUnreachable=False,markedStates=[],labelStates=0)
-  plot the transition matrix diagram using Graphviz. 
-  Inputs:
-      S, symbols associated with the states. 
-      P, transition matrix. 
-      Pcut, do not plot if the transition probability is below Pcut. 
-      filenameDot, filenamePS, filenames for storing the dot file and the ps file. 
-
-  plotTwoPOMMsStateCorrespondences(S1,P1,Syms21,S2,P2,Syms22,StateCorres21,filenameDot)
-  plot two POMM models in a way such that the corresponding states occupy the same positions. 
-  parameteres:
-      S1, P1, Syms21 - POMM 1, state vector, transition probabilities, Syms2
-      S2, P2, Syms22 - POMM 2
-      StateCorres21 - disctionary of state correspondence from POMM 2 to POMM 1. 
-      filenameDot - filename of the dot file created. 
-
-  plotSequenceCompleteness(PCs,ylimMax=-1,xlimlow=0, width=0.02, ticks = [0,0.5,1])
-  plot sequence completeness in a nice way. 
-
-  randomSelectInd(nind, ntot, excludeInd = -1)
-  randomly select nind out of ntot
-  excludeInd != -1, exclude this index. 
-      
-
-  MergeStates(S,P,mergeInds)
-  merge states, keep the state vector structure but change the transition probability matrix
-  merge state ii to jj. The list is given in mergeInds
-  NOTE: merge is order dependent! Do not merge into empty state (1,2), (3,1) would be wrong because 1 is empty after (1,2). 
-  keep the connections, recalcuate the transition proabilities. 
-  returns updated transition probabilties. 
-
-  getStepProbability(osT,nSym,nSteps)
-  get the step probability distribution.      
-  Inputs:
-      osT, sequences, symbols are numerical 1 to nSym
-      nSym, number of sylmols 
-      nStep, number of steps for computing the probabilities. 
-   Return
-      PSteps, nStep x (nSym+1) matrix. PSteps[:,0] is the probability of ending at the steps. 
-
-
-  MergeStatesRecalculateP(S,P,mergeInds,osT,maxIterBW=1000,nRerunBW=100,nProc=2)
-  merge states, keep the state vector structure but change the transition probability matrix
-  merge state ii to jj. The list is given in mergeInds
-  NOTE: merge is order dependent! Do not merge into empty state (1,2), (3,1) would be wrong because 1 is empty after (1,2). 
-  keep the connections, recalcuate the transition proabilities. 
-  recalculate the transition probabilities with input sequencnes. 
-  returns updated transition probabilties. 
-  Inputs:
-      S - state vector
-      P - transitinn probabilities
-      mergeInds - list of pair of indices (ii,jj), merging state ii to state jj. 
-      maxIterBW, nRerunBW, nProc, parameters for BW algorithm. 
-  Return:
-      P2 - transition matrix. 
-
-
-  generateSequenceSamples(S,P,N,nSample=nSample,nProc=nProc)
-  generegate nSample sets of N sequences from the POMM. 
-  Inputs:
-      S - state vector
-      P - transition matrix
-      N - number of sequences in each set.
-      nSample - number of sets sampled. 
-      nProc - number of processes used. 
-  Return:
-      osSampled - sampled sets of sequences
-
-  computePsStatsInSamples(osTSamples,ss,Ps0,nProc=nProc)  
-  compute the Ps of subsequence ss in the sampled seqeunces, return confidence intervals. 
-  Inputs:
-      osTSamples - sampled sequences
-      ss - subsequence
-      Ps0 - Ps of the subsequence in the observed set
-      nProc - number of process used
-  Returns:
-      pv - p-value of the observed Ps0 being larger than the smapled. 
-      pL - lower bound of Ps in 95% confidence interval
-      pS - upper bound of Ps in 95% confidence interval   
-      pMedian - median value of the distribution
-
-
-  computeNumTasksProc(nTot, nProc = 2)
-  blance load on multiple process, returns arrar of number of computations each process should handle. 
-  usefule wen nStask is not multiples of nProc
-  Inputs:
-      nTot - total number of tasks
-      nProc - number of processors
-  returns
-      NS - list of length nProc, number of tasks assinged to each processor
-
-  RemoveRareSequences(osIn, pCut = 0.001)
-  remove unique sequences with probability smaller than pCut. 
-  Inputs:
-      osIn - list of sequences
-      pCut - sequences with probability smaller that pCut are deleted
-  Retuts:
-      osOut - list of sequences returned. 
-
-  getSequenceCompletenessSampleToSample(osRef, osIn)  
-  Compute sequence completeness comparing samples
-  Inputs:
-      osRef - reference sequences
-      osIn  - sequences to be compared
-  Returns:
-      Pc - sequence completeness
-
-  plotSequenceLengthDistribution(seqs,fn='')
-  Plot sequence length distribution and save to fn.           
-
-  plotProbDistribution(Ps,ylimMax=-1,xlimlow=0, width=0.02, xticks = [0,0.2,0.4,0.6,0.8,1],yticks = [])   
-  plot sequence completeness in a nice way. 
-
+        osIn, observed sequence
+        nSample, number of samples, default 10000
+        nProc, number of processors used
+    Returns:
+        pv, p-value of the observed sequence on the model.
+        PBs, modified sequence completeness sampled
+        PbT, modified sequence completeness of the observed sequences
+ 
+ 
+    getPVSampledSeqsPOMMnoPbDistr(S, P, osIn, nSample = 10000, nProc=2):
+    get p-value of the observed sequences against the Pb of the sampled sequences for a given POMM. 
+    To save memory usage, the PBs are not stored. 
+    Instead, the number of times sampled Pb is larger that PbT (+1e-10 to break ties) are recorded. 
+    These are used to compute pv.
+    Inputs:
+        S, state vector
+        P, transition probabilities
+        osIn, observed sequence
+        nSample, number of samples, default 10000
+        nProc, number of processors used
+    Returns:
+        pv, p-value of the observed sequence on the model.
+        PbT, sequence completeness of the observed sequences. 
+ 
+ 
+    getUniqueSequences(osIn)
+    Input:
+        osIn, list of sequences
+    Returns:
+        osU, unique sequences
+        osK, number of times the unique sequences appear
+        symU, symbols.
+ 
+ 
+    BWPOMMCParallel(S,osInO,C=[],maxSteps=5000,pTol=1e-6, nRerun=100, nProc = 2)
+    Parallel version of BWPOMM, calling C function BWPOMMC from libPOMM.h   
+    Inputs:
+        S, state vector
+        osInO, observed sequences
+        C, connectivity matrix, 1 or 0, those with 0 are cut.
+        maxSteps, maximum number of steps for updating the transition probabilities
+        pTol, tolerance for the transition probabilities
+        nRerun, number of times the algorithm is run. 
+        nProc, number of processors used. 
+    Returns:
+        P, computed transition matrix
+        MLmax, maximum log likelihood
+        Pc, sequence completeness of the input sequences on the model
+        stdML, standard deviation of the maximum likelihood achieved for all runs. 
+        MK, list of maximum likelihoods
+ 
+ 
+    getUniuqeSequencesProbConfidenceIntervals(osK, alpha)
+    get the confidence intervals of the probabilities of unique sequences
+    Input
+        osK - counts of the occurances of unique sequences
+        alpha - significance level
+    Output
+        pL - array, lower bounds of the confidence intervals
+        pU - array, upper bounds of the confidence intervals. 
+ 
+ 
+    computeLogLike(S,P,osU,osK)
+    Compute log likelihood of the seqeucens given the POMM. 
+    inputs
+        S, states
+        P, transition matrix
+        osU, unique sequences
+        osK, counts. 
+    returns
+        llk, log likelihood.
+ 
+ 
+    normP(P)
+    normalize the transition matrix. Enforce the fact that the first row is the start state, and the second row is the end state. 
+ 
+ 
+    generateSequencePOMM(S,P,nseq)
+    given the state transition matrix, generate the observed seqeunces.
+    Assumptionm, S[0], S[1] are the start and the end states. 
+    Inputs:
+        S, state vector
+        P, transition probability
+        nseq, number of sequences to be generated
+    Output:
+        gs, generated sequences
+ 
+    printP(P)
+    print the transition matrix in a nice form.
+ 
+    
+    getSequenceProbModel(S,P,osIn,osU = [])
+    Given the model, compute the probabilities of unique sequences in osIn. 
+    Input parameters:
+        S, states
+        P, transition probabilities
+        osIn, observed sequences.
+        osU, unique sequences in osIn. If empty, computed. 
+    Returns osU, PU
+        osU, unique sequences
+        PU, probabilities of unique sequences.  
+ 
+    computeSequenceCompleteness(S,P,osIn,osU = [])
+    compute the sum of the probabilities of all unique sequences given the state machine.   
+    Inputs
+        S, states
+        P, transition probabilities
+        osIn, observed sequences.
+        osU, unique sequences in osIn. If empty, computed. 
+    Outputs
+        Pc, sequence completeness
+        Ps, probabilities of the sequences
+ 
+ 
+    computeSequenceProb(ss, S, P)
+    compute the probability of the sequence given the model
+    Inputs: 
+        ss, sequence
+        S, state vector
+        P, transition matrix
+    Returns
+        ps, probability of the sequence. 
+ 
+ 
+    stateSeq, prob = SeqcomputeMostProbableStateSequence(S,P,seq)
+ 
+    compute the most likely path of the state given the sequence
+    Input:
+        S - state vector
+        P - transition probabilities
+        seq - sequence
+    Return:
+        stateSeq - the most probable state sequence
+        prob - probability of the most probable sequence
+ 
+ 
+    SampleTransitionCounts(P,N)
+    This function returns the number of transition sampled with transition probability P.
+    The total number of sampling is N.  
+    Inputs: 
+        P, 1d array, transition probabilities
+        N, number of transitions sampled.
+    Returns"
+        C, 1d array, number of times each choice is selected. 
+ 
+ 
+    ConstructMarkovModel(osIn,syms,pcut = 0.0)
+    This function constructs Markov model 
+    Inputs:
+        osIn, List of input sequences
+        syms, symbols in the seuqencs       
+    return 
+        P, transition matrix 
+        S, state vector
+        C, counts of transitions
+ 
+    CreateMarkovModelFanout(nSyms,nFanOut)
+    create a Markov model with nSyms, with the fan out from each state maxed to nFanout. 
+    the transition probabilities are equal for each transition. 
+    Inputs
+        nSyms - number of symbols
+        nFanOut - maximum number of fan out. the number of fan out can be small if some unreachable states are deleted.
+    returns 
+        S, state vector 
+        P, transition matrix
+ 
+    CreatePOMMFanout(nSyms,nExtra,nFanOut)
+    create a POMM with nSyms, with the fan out from each state maxed to nFanout. 
+    the transition probabilities are equal for each transition. 
+    Inpits:
+        nSyms - number of symbols
+        nExtra - number of extra states for each symbol
+        nFanOut - maximum number of fan out. the number of fan out can be small if some unreachable states are deleted.
+    Returns: 
+        S, state vector 
+        P, transition matrix
+ 
+    
+    removeUnreachableStates(S,P)
+    remove states that are unreachiable from the start state. Keep the transitions to the end states.   
+    Inputs:
+        S, P
+    Returns:
+        S, P
+ 
+ 
+    deleteTransitionSmallProb(S,P,Pcut = 0.01)
+    detete connections with small transition probabilities.     
+    Inputs:
+        S, state vector
+        P, transition matrix
+        Pcut, transition probability threshold for cutting. 
+ 
+ 
+    convertToNumericalSequences(seqsIn,symsIn)
+    convert sequences into numerical sequences with syms from 1 - n, where n is the number of symbols.
+    Inputs:
+        seqsIn, input sequences, array of arrays
+        symsIn, symbols in the input sequences, array
+    returns:
+        seqs, numerical sequences
+        syms,numerical syms corresponding to symsIn, basically the numerical order of a symbol in symsIn
+ 
+ 
+    getNumericalSequencesNonRepeat(seqs,syllableLabels)
+    Get non-repeat sequences in numberical form read for analysis from strings. 
+    Inputs
+        seqs, sequences
+        syllableLabels, labels of syllables in the sequences
+    returns 
+        osIn, numerical sequences generated
+        repeatNumSeqs, repeat numbers of each syllable in the sequence. 
+        Syms, dictionary converging syms to numerics
+        Syms2, dictionary converging numerics to syms  
+ 
+ 
+    plotTransitionDiagram(S,P,Pcut=0.01,filenameDot='temp.dot',filenamePDF='temp.pdf',removeUnreachable=False,markedStates=[],labelStates=0)
+    plot the transition matrix diagram using Graphviz. 
+    Inputs:
+        S, symbols associated with the states. 
+        P, transition matrix. 
+        Pcut, do not plot if the transition probability is below Pcut. 
+        filenameDot, filenamePDF, filenames for storing the dot file and the PDF file. 
+ 
+ 
+    plotTwoPOMMsStateCorrespondences(S1,P1,Syms21,S2,P2,Syms22,StateCorres21,filenameDot)
+    plot two POMM models in a way such that the corresponding states occupy the same positions. 
+    parameteres:
+        S1, P1, Syms21 - POMM 1, state vector, transition probabilities, Syms2
+        S2, P2, Syms22 - POMM 2
+        StateCorres21 - disctionary of state correspondence from POMM 2 to POMM 1. 
+        filenameDot - filename of the dot file created. 
+ 
+    plotSequenceCompleteness(PCs,ylimMax=-1,xlimlow=0, width=0.02, ticks = [0,0.5,1])
+    plot sequence completeness in a nice way. 
+ 
+ 
+    randomSelectInd(nind, ntot, excludeInd = -1)
+    randomly select nind out of ntot
+    excludeInd != -1, exclude this index. 
+        
+ 
+    MergeStates(S,P,mergeInds)
+    merge states, keep the state vector structure but change the transition probability matrix
+    merge state ii to jj. The list is given in mergeInds
+    NOTE: merge is order dependent! Do not merge into empty state (1,2), (3,1) would be wrong because 1 is empty after (1,2). 
+    keep the connections, recalcuate the transition proabilities. 
+    returns updated transition probabilties. 
+ 
+    getStepProbability(osT,nSym,nSteps)
+    get the step probability distribution.      
+    Inputs:
+        osT, sequences, symbols are numerical 1 to nSym
+        nSym, number of sylmols 
+        nStep, number of steps for computing the probabilities. 
+     Return
+        PSteps, nStep x (nSym+1) matrix. PSteps[:,0] is the probability of ending at the steps. 
+ 
+ 
+    MergeStatesRecalculateP(S,P,mergeInds,osT,maxIterBW=1000,nRerunBW=100,nProc=2)
+    merge states, keep the state vector structure but change the transition probability matrix
+    merge state ii to jj. The list is given in mergeInds
+    NOTE: merge is order dependent! Do not merge into empty state (1,2), (3,1) would be wrong because 1 is empty after (1,2). 
+    keep the connections, recalcuate the transition proabilities. 
+    recalculate the transition probabilities with input sequencnes. 
+    returns updated transition probabilties. 
+    Inputs:
+        S - state vector
+        P - transitinn probabilities
+        mergeInds - list of pair of indices (ii,jj), merging state ii to state jj. 
+        maxIterBW, nRerunBW, nProc, parameters for BW algorithm. 
+    Return:
+        P2 - transition matrix. 
+ 
+ 
+    generateSequenceSamples(S,P,N,nSample=nSample,nProc=nProc)
+    generegate nSample sets of N sequences from the POMM. 
+    Inputs:
+        S - state vector
+        P - transition matrix
+        N - number of sequences in each set.
+        nSample - number of sets sampled. 
+        nProc - number of processes used. 
+    Return:
+        osSampled - sampled sets of sequences
+ 
+    computePsStatsInSamples(osTSamples,ss,Ps0,nProc=nProc)  
+    compute the Ps of subsequence ss in the sampled seqeunces, return confidence intervals. 
+    Inputs:
+        osTSamples - sampled sequences
+        ss - subsequence
+        Ps0 - Ps of the subsequence in the observed set
+        nProc - number of process used
+    Returns:
+        pv - p-value of the observed Ps0 being larger than the smapled. 
+        pL - lower bound of Ps in 95% confidence interval
+        pS - upper bound of Ps in 95% confidence interval   
+        pMedian - median value of the distribution
+ 
+ 
+    computeNumTasksProc(nTot, nProc = 2)
+    blance load on multiple process, returns arrar of number of computations each process should handle. 
+    usefule wen nStask is not multiples of nProc
+    Inputs:
+        nTot - total number of tasks
+        nProc - number of processors
+    returns
+        NS - list of length nProc, number of tasks assinged to each processor
+ 
+    RemoveRareSequences(osIn, pCut = 0.001)
+    remove unique sequences with probability smaller than pCut. 
+    Inputs:
+        osIn - list of sequences
+        pCut - sequences with probability smaller that pCut are deleted
+    Retuts:
+        osOut - list of sequences returned. 
+ 
+    getSequenceCompletenessSampleToSample(osRef, osIn)  
+    Compute sequence completeness comparing samples
+    Inputs:
+        osRef - reference sequences
+        osIn  - sequences to be compared
+    Returns:
+        Pc - sequence completeness
+ 
+    plotSequenceLengthDistribution(seqs,fn='')
+    Plot sequence length distribution and save to fn.           
+ 
+    plotProbDistribution(Ps,ylimMax=-1,xlimlow=0, width=0.02, xticks = [0,0.2,0.4,0.6,0.8,1],yticks = [])   
+    plot sequence completeness in a nice way. 
+ 
   AIC = computeAIC(S,P,osU,osK) 
   compute AIC score given the model. 
   parameters:
@@ -549,16 +550,19 @@ pTolence = 1e-5                 # smallest transition probability.
     AIC
 
 
-  S, P, SnumVis = constructNGramPOMM(osIn, ng);
-  Constructs ngram POMM model from the sequences osIn.
-  Inputs:
-    osIn    - observed sesequences
-    ng      - length of order of the ngram Markov model. ng=1 is the Markov model, ng=2 is the 2nd order Markov model, etc
-  Returns:
-    S       - State vector
-    P       - Transition probabilities
-    SnumVis - number of times a state visited. 
+    S, P, SnumVis = constructNGramPOMM(osIn, ng);
 
+    Constructs ngram POMM model from the sequences osIn.
+    Inputs:
+
+        osIn    - observed sesequences
+        ng      - length of order of the ngram Markov model. ng=1 is the Markov model, ng=2 is the 2nd order Markov model, etc
+    
+    Returns:
+    
+        S       - State vector
+        P       - Transition probabilities
+        SnumVis - number of times a state visited. 
 
 """
 
@@ -1313,7 +1317,7 @@ def testConstructNGramPOMM():
     S2 = [0,-1]
     for ss in S[2:]:
         S2.append(Syms2[ss]) 
-    plotTransitionDiagram(S2,P,Pcut=0.01,filenamePDF='test.ConstructNGramPOMMC.pdf', \
+    plotTransitionDiagram(S2,P,Pcut=0.01,filenamePS='test.ConstructNGramPOMMC.ps', \
             removeUnreachable=False,markedStates=[])    
     
     t1 = time.time()    
@@ -1324,7 +1328,7 @@ def testConstructNGramPOMM():
     S2 = [0,-1]
     for ss in S[2:]:
         S2.append(Syms2[ss]) 
-    plotTransitionDiagram(S2,P,Pcut=0.01,filenamePDF='test.ConstructNGramPOMM.pdf', \
+    plotTransitionDiagram(S2,P,Pcut=0.01,filenamePS='test.ConstructNGramPOMM.ps', \
             removeUnreachable=False,markedStates=[])    
 
 
@@ -1849,7 +1853,7 @@ def testNGramOrTreePOMMSearch():
     S2 = [0,-1]
     for ss in S[2:]:
         S2.append(Syms2[ss]) 
-    plotTransitionDiagram(S2,P,Pcut=0.01,filenamePDF=filenameSave, \
+    plotTransitionDiagram(S2,P,Pcut=0.01,filenamePS=filenameSave, \
             removeUnreachable=False,markedStates=[])    
                 
     
@@ -2362,6 +2366,7 @@ def BWPOMMCFun(Params):
     randSeed = int(rand() * 100000);
     nSeq = len(osIn)
 
+    t1 = time.time()
     # set parameter types   
     lib.BWPOMMC.argtypes = [ctypes.c_long, ctypes.POINTER(ctypes.c_long), \
                             ctypes.c_long, ctypes.POINTER(ctypes.c_long), 
@@ -2375,6 +2380,8 @@ def BWPOMMCFun(Params):
                  ctypes.c_long(N),S.ctypes.data_as(ctypes.POINTER(ctypes.c_long)), \
                  P.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), \
                  ctypes.c_double(pTol), ctypes.c_long(maxIter), ctypes.c_long(randSeed))
+    t2 = time.time()
+    print('     BWPOMMC used ',t2-t1,'sec')
     
     #ml2 = computeLogLike(S,P,osU,osK)
     #print('ml C=',ml)
@@ -2837,8 +2844,16 @@ def convertToNumericalSequences(seqsIn,symsIn):
 #   returns 
 #       osIn, numerical sequences generated
 #       repeatNumSeqs, repeat numbers of each syllable in the sequence. 
-#       symsNumeric, numerical symbol.  
+#       Syms, Syms2, dictionary for convergting syms to numerics and vice versa. 
 def getNumericalSequencesNonRepeat(seqs,syllableLabels):
+
+    Syms = {}
+    Syms2 = {}
+    for i in range(len(syllableLabels)):
+        sym = syllableLabels[i]
+        Syms[sym] = i+1
+        Syms2[i+1] = sym
+
     osIn = []
     repeatNumSeqs = []  # number of times each syllable is repeated. 
     for sq in seqs:
@@ -2847,7 +2862,7 @@ def getNumericalSequencesNonRepeat(seqs,syllableLabels):
         iid0 = -1
         rn = 1
         for lb in sq:
-            iid = syllableLabels.index(lb)+1
+            iid = Syms[lb]
             if iid != iid0:
                 ss += [iid]
                 if len(ss) > 1:
@@ -2862,14 +2877,15 @@ def getNumericalSequencesNonRepeat(seqs,syllableLabels):
         #print(rs)
         osIn.append(ss)
         repeatNumSeqs.append(rs)
-    symsNumeric = range(1,len(syllableLabels)+1)    # numerical symbols 
-    return osIn, repeatNumSeqs, symsNumeric     
+    
+
+    return osIn, repeatNumSeqs, Syms, Syms2     
         
 # plot the transition matrix diagram using Graphviz. 
 # S, symbols associated with the states. 
 # P, transition matrix. 
 # Pcut, do not plot if the transition probability is below Pcut. 
-# filenameDot, filenamePDF, filenames for storing the dot file and the ps file. 
+# filenameDot, filenamePS, filenames for storing the dot file and the ps file. 
 def plotTransitionDiagram(S,P0,Pcut=0.01,filenameDot='temp.dot',filenamePDF='temp.pdf',removeUnreachable=False,markedStates=[],labelStates=0,extraStateMarks={}):
     fp=open(filenameDot,'w')
     fp.write('digraph G {\n')
@@ -2948,7 +2964,7 @@ def plotTransitionDiagram(S,P0,Pcut=0.01,filenameDot='temp.dot',filenamePDF='tem
     fp.close()
     
     # save graph files. 
-    command = ['dot', '-Tpdf', filenameDot, '-o', filenamePDF]        # this is for linux
+    command = ['dot', '-Tpdf', filenameDot, '-o', filenamePDF]      # this is for linux
     call(command)
         
                 
