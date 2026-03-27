@@ -1,14 +1,7 @@
-"""
-
- Written by 
-    Dezhe Jin
-    Department of Physics, Penn State
-    dzj2@psu.edu
-    
- 05/06/2022 - 04/01/2023
-
- Example POMMS for illustrating the process of inferring POMMs. 
-"""
+# Written by Dezhe Jin, Department of Physics, Penn State, dzj2@psu.edu
+# 05/06/2022 - 04/01/2023, update 03/27/2026
+#
+# Example POMMS for illustrating the process of deriving POMMs. 
 
 from POMM import *
 import pickle
@@ -16,8 +9,6 @@ import os
 import POMM
 import matplotlib
 matplotlib.rcParams['font.family'] = 'Times'
-
-ddr = './'  # directory for figures
 
 ### common parameters
 maxIterBW = 1000            # maximum iterations in BW algorithm
@@ -30,7 +21,7 @@ def main():
     random.seed(datetime.now().timestamp()) 
         
     # define the POMM
-    iModel = 4      # 1, two state for each symbol, example used in the paper. 
+    iModel = 1      # 1, two state for each symbol, example used in the paper. 
                     # 2, Markov model. 
                     # 3, probability dependent POMM ACD, ACE (less probable), BCD (less probable), BCE, for Fig.1
                     # 4, Markov model corresponding to the iModel=1, the example in the paper. 
@@ -121,15 +112,11 @@ def main():
     for ii in range(2,len(SS)):
         SO.append(Syms[SS[ii]])
     print('SO = ',SO)
+                
+    plotModel(SS,PO)
     
-    S2 = [0,-1]
-    for ss in SO[2:]:
-        S2.append(Syms2[ss]) 
-
-    plotTransitionDiagram(S2,PO,Pcut=0.01,filenamePDF=ddr+'exampleGroundTruthPOMM.pdf', \
-            removeUnreachable=False,markedStates=[])    
-    
-    inferringPOMMfromExampleSequences(SO,PO,Syms2, nTot = 60)  # generate nTot sequences from the ground truth model and use the sequences to infer POMM. Ideally the inferred POMM is the same as the ground truth POMM. 
+    fittingPOMMnTot(SO,PO)  
+    plotExamplePOMMRes(Syms2)
     
     #testMarkovModel(SO, PO, Syms2)
     
@@ -151,63 +138,120 @@ def main():
     #plotTestBetaValues()
         
 
-def plotModel(S,P,finamePDF='exampleGroundTruthModel.pdf'):
+def plotModel(S,P,finamePDF='gridSearchExampleOrinModel.pdf'):
+    ddr = 'FigsToyModels/'
     # plot the transition diagram
     plotTransitionDiagram(S,P,Pcut=0.01, filenamePDF=ddr+finamePDF, \
             removeUnreachable=False,markedStates=[])
             
-def inferringPOMMfromExampleSequences(SO,PO,Syms2,nTot = 60):
+def fittingPOMMnTot(SO,PO):
     
     nRerunBW = 100
     nSample = 10000
+    Pcut = 0.001                    # connections with p smaller than this are cut during calculations. 
+    mergeClusterDistThreshod = 0.2  # control merging states. large value leads to simpler models but have low p-value. Experiment, 
 
-    print('\n generating nTot=',nTot,' sequences from the ground truth model\n')
-    osIn = generateSequencePOMM(SO,PO,nTot)
-    print('\nGenerated sequence from the ground truth model: ')
-    for seq in osIn:
-        ss = ''
-        for s in seq:
-            ss += Syms2[s]
-        print(ss)
-    print('\n')
+    nRuns = 10
+    nTotList = [10,30,60,90]    
+    
+    stateMergeParam = [1.0, 0.1, 0.1] # merge parameter search, maximum value, min value, stepSize. 
+    
+    ddr = 'FigsToyModels/'
+    filenameSave = ddr+'ExamplePOMMRes.beta_'+str(betaTotalVariationDistance)+'.dat'    
+
+    # sample sequences from the model
+
+    NStates = []
+    XX = []
+    SS = []
+    PP = []
+        
+    for nTot in nTotList:
+        
+        print('\nnTot=',nTot)
+        for iRun in range(nRuns):
+            print('\nAt run iRun=',iRun)
+            osIn = generateSequencePOMM(SO,PO,nTot)
             
-    print('\n Inferring POMM usinging the method of reducing from an accepted N-gram model...')
-    S, P, pv, PBs, PbT, Pc = NGramPOMMSearch(osIn,nRerun=nRerunBW,pValue=pValue,nProc=nProc,nSample =nSample)
-                
-    # simplify by cutting connections       
-    S, P, pv, PBs, PbT  = MinPOMMSimp(S,osIn,minP = 0,nProc=nProc,nRerun=nRerunBW,pValue=pValue, nSample=nSample, factors=[0.5])    
-    print('After simplification pv=',pv)
-
-    # plot the P-beta test
-    print('Saving the Pbeta distribution')
-    plt.hist(PBs,bins=50)
-    yl = plt.ylim()
-    plt.plot([PbT, PbT],yl,'r')
-    plt.title(f'P_beta distribution of sampled sequences, red line pv={pv:.3f}')
-    plt.xlabel('P_beta')
-    plt.savefig('examplePbetaDist.pdf')
-    
-    print('Plotting the inferred POMM.')
-    S2 = [0,-1]
-    for ss in S[2:]:
-        S2.append(Syms2[ss]) 
-    plotTransitionDiagram(S2,P,Pcut=0.01,filenamePDF=ddr+'exampleInferredPOMM_nTot_'+str(nTot)+'.pdf', \
-            removeUnreachable=False,markedStates=[])    
-    
-    
-    # sample sequences from the POMM. 
-    seqs = generateSequencePOMM(S,P,nTot)
-    print('\nGenerated sequence from the inferred POMM: ')
-    for seq in osIn:
-        ss = ''
-        for s in seq:
-            ss += Syms2[s]
-        print(ss)
-    print('\n')
-    
+            print('N-gram method ...')
+            S, P, pv, PBs, PbT = NGramPOMMSearch(osIn, stateMergeParam=[1.0,0.1,0.1], pValue=pValue, Pcut=Pcut, nProc=nProc, nSample =nSample)
                                                                 
+            NStates.append(len(S)-2)
+            XX.append(nTot)
+            SS.append(S)
+            PP.append(P)
+
+        print('Saving the results to ',filenameSave)
+        fn = open(filenameSave,'wb')
+        pickle.dump([XX,NStates,SS,PP],fn)
+        fn.close()  
+                                
+def plotExamplePOMMRes(Syms2):
+    
+    minNum = 4
+    maxNum = 8
+    histMax = 100
+    
+    ddr = 'FigsToyModels/'
+    
+    filenameSave=ddr + 'ExamplePOMMRes.beta_0.2.dat'
+
+    print('Loading the results from ',filenameSave)
+    fn = open(filenameSave,'rb')
+    XX, NStates, SS, PP = pickle.load(fn)
+    fn.close()      
+
+    NTot = unique(XX)
+    XX = array(XX)
+    print(XX)
+    
+    for nTot in NTot:
+
+        iids = where(XX == nTot)[0]
+        NS = array([NStates[kk] for kk in iids])
+        SSS = [SS[kk] for kk in iids]
+        PPP = [PP[kk] for kk in iids]
+        
+        plt.figure()
+        plt.xlim([minNum-0.3,maxNum+0.3])
+        bb = list(range(maxNum))
+        cc = [0 for i in range(len(bb))]
+        for kk in range(len(bb)):
+            cc[kk] = len(where(NS == kk)[0])
+        print('nTot=',nTot)
+        print(' numStates=',bb)
+        print(' counts   =',cc)
+        print(' ')
+        plt.bar(bb,cc,width=0.3,color='gray')
+        plt.axis('off')
+        plt.plot([minNum-0.3,maxNum+0.3],[0,0],color='gray')
+        plt.ylim([0,histMax])
+        ylim = plt.ylim()
+        for kk in range(minNum,maxNum+1):
+            plt.text(kk,-0.1*ylim[1],str(kk),horizontalalignment='center')
+        plt.savefig(ddr+'ExamplePOMMNumStates'+str(nTot)+'.pdf')    
+    
+        # plot the most probable model. 
+        iic = argmax(cc)
+        print(' histogram max at NS = ',bb[iic])
+        # select a model to plot. 
+        for kk in range(len(NS)):
+            if len(SSS[kk])-2 == bb[iic]:
+                S = SSS[kk]
+                P = PPP[kk]
+                print(' Selected model to plot ',S)
+                break
+            
+        S2 = [0,-1]
+        for ss in S[2:]:
+            S2.append(Syms2[ss]) 
+        plotTransitionDiagram(S2,P,Pcut=0.01,filenamePDF=ddr+'ExamplePOMMDerivedModel'+str(nTot)+'.pdf', \
+                removeUnreachable=False,markedStates=[])    
+                
         
 def testMarkovModel(SO,PO,Syms2):
+    
+    ddr = 'FigsToyModels/'
     
     nSample=10000
     maxHist = 2200
@@ -264,7 +308,9 @@ def testMarkovModel(SO,PO,Syms2):
         print('Not saving the results. ')
     
 def plotMarkovModelTestRes():
-            
+    
+    ddr = 'FigsToyModels/'
+        
     filenameSave = ddr + 'MarkovModelTest.beta_'+str(betaTotalVariationDistance)+'.dat'
     print('Loading the results from ',filenameSave)
     fn = open(filenameSave,'rb')
@@ -416,7 +462,7 @@ def nGramModelIllustration(SO,PO, Syms2):
         S2 = ['S','E']
         for ss in S[2:]:
             S2.append(Syms2[ss])
-        fn = ddr+'example'+str(ng)+'GramPOMM.ps'
+        fn = 'FigsToyModels/example'+str(ng)+'GramPOMM.pdf'
         print('Saving '+str(ng)+'-gam POMM of the example to ',fn)
         plotTransitionDiagram(S2,P,filenamePDF=fn,labelStates=1)
         
@@ -496,6 +542,7 @@ def MarkovModelIllustration(SO, PO, Syms2):
 # use AIC and BIC criteria for selecting POMM for the toy model.            
 def AICBICPbetaModelInduction(SO, PO, Syms2):
 
+    ddr = 'FigsToyModels/'
     filenameSave = ddr+'AICBICPbetaRes.dat' 
     
         
@@ -634,6 +681,7 @@ def AICBICPbetaModelInduction(SO, PO, Syms2):
                             
 def plotAICBICPbetaRes(Syms2):
         
+    ddr = 'FigsToyModels/'
     filenameSave = ddr+'AICBICPbetaRes.dat' 
 
     print('Loading the results from ',filenameSave)
@@ -702,6 +750,7 @@ def plotAICBICPbetaRes(Syms2):
 
 def testBetaValues(SO, PO, Syms2):
 
+    ddr = 'FigsToyModels/'
     filenameSave = ddr+'POMMTestingBetaChoiceRes.dat'   
     
     NTot = [10,30,90]       # number of sequences
@@ -759,6 +808,7 @@ def testBetaValues(SO, PO, Syms2):
 # plot testing          
 def plotTestBetaValues():
     
+    ddr = 'FigsToyModels/'
     filenameSave = ddr+'POMMTestingBetaChoiceRes.dat'   
     
     fn = open(filenameSave,'rb')
