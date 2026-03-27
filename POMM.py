@@ -7,7 +7,8 @@
    transition probability P of the state vectors. 
        This specifes the transition probabilities between the states. 
 
- Written by Dezhe Jin, Department of Physics, Penn State, dzj2@psu.edu, 9/9/2015, updated 4/14/2022. 
+ Written by Dezhe Jin, Department of Physics, Penn State, dzj2@psu.edu, 9/9/2015, updated 4/14/2022, 12/10/2025, 3/27/2026 
+
  Updates
     2025-12-10  plotTransitionDiagram(S,P,Pcut=0.01,filenameDot='temp.dot',filenamePDF='temp.pdf',removeUnreachable=False,markedStates=[],labelStates=0)
                     changd output to PDF instead of PS file format. filenamePDF='temp.pdf'
@@ -15,7 +16,9 @@
                 getNumericalSequencesNonRepeat(seqs,syllableLabels)
                     changed return. Now returns numericSeqs, repeatNumSeqs, Syms, Syms2
                     Here Syms is a dictionary converting syms to numerics, and Syms2 converts numerics to syms. 
-
+                    
+    2026-03-27  Major update on NGramPOMMSearch, which infers POMM from observed sequences. 
+    
    
 '''
 
@@ -61,6 +64,8 @@ import threading
 from sklearn.decomposition import TruncatedSVD
 from sklearn.utils.extmath import randomized_svd        
 from scipy.sparse import csr_matrix
+from scipy.cluster.hierarchy import linkage, fcluster, dendrogram
+from scipy.spatial.distance import pdist
 
 
 #import rpy2.robjects as robjects   # for Fisher exact test
@@ -85,484 +90,508 @@ pTolence = 1e-5                 # smallest transition probability.
     
 """
 
-   List of all functions
+    List of all functions
 
-   NGramPOMMSearch(osIn, nRerun = 100, pValue=0.05, nProc=2,nSample = 10000):
-   Construct POMM using n-gram model.
-   Successively build n-gram transition models, and test for Pbeta significance.
-   Then merge states. Then delete states. 
-       osIn - list of observed sequences. Symbols must be 1,2,...,n, where n is the number of symbols. 
-       nProc - number of processes used for BW
-       pValue - p-value for accepting the POMM using Pc. 
-       nSample - number of samples for calculating pValue. 
-       nRerun - number of time BW algorith is rerun during the state deletion process
-   return: S, P, pv, PBs, PbT, Pc
-       S - the final state
-       P - the final transition prob
-       pv - p-value of the observed seqeunce
-       PBs - PBs sampled from the final model
-       PbT - Pb of the observed sequences on the final model
-       Pc - sequennce completenss
-
-   TreePOMMSearch(osIn, nRerun = 100, pValue=0.05, nProc=2,nSample = 10000)
-   Construct POMM using tree model as the starting point.
-   Start with the tree model, then merge states. Then delete states. 
-       osIn - list of observed sequences. Symbols must be 1,2,...,n, where n is the number of symbols. 
-       nProc - number of processes used for BW
-       pValue - p-value for accepting the POMM using Pc. 
-       nSample - number of samples for calculating pValue. 
-       nRerun - number of time BW algorith is rerun during the state deletion process
-
-   return: S, P, pv, PBs, PbT, Pc
-       S - the final state
-       P - the final transition prob
-       pv - p-value of the observed seqeunce
-       PBs - PBs sampled from the final model
-       PbT - Pb of the observed sequences on the final model
-       Pc - sequennce completenss
-
-
-   MinPOMMGrid(osIn,maxNumStates=50,maxIterBW=1000,nRerunBW=50,maxNumSearch=1000,pValue=pValue,nProc=2,nSample = 10000)
-   Search for the minimum POMM describing the seqeunces.
-   From the start state, the algorithm searches nearby grid points, and selects the one with maximum likelihood. 
-   The grid point is accepted if the POMM at the grid is not rejected by statistical test 
-   that samples sets of sequences from the POMM, computes Pb distribution, and the Pb of the observed 
-   seuqences is accepted with p > p_value. 
-   input parameters:
-       osIn - list of observed sequences. Symbols must be 1,2,...,n, where n is the number of symbols. 
-       maxNumStates - upper limit of number of states for each symbol. 
-       maxIterBW - maximum number of iterations for BW to find P for a POMM,
-       nRerunBW - number of reruns for BW to find P for a POMM. 
-       maxNumSearch - maximum number of times of search 
-       nProc - number of processes used for BW
-       nSample - number of samples used for computing pV
-       pValue - p-value for accepting the POMM on the grid. 
-   return:
-       S0 - the final state
-       P0 - the final transition prob
-       MLT - maximum likelihood on the grids searched and test sets
-       pv - p-value of the observed seqeunce
-       PBs - PBs sampled from the final model
-       PbT - Pb of the observed sequences on the final model
+    NGramPOMMSearch
    
-   MinPOMMExpansionDeletion(osIn,SIn=[],maxNumStates=50,maxIterBW=1000,nRerunBW=50,maxNumSearch=1000,pValue=pValue,nProc=2,nSample = 10000)
-   Search for the minimum POMM describing the sequences.
-   First expand the state in the diagonal directions [1,1,1,...], [2,2,2,...],[3,3,...], then delete
-   The grid point is accepted if the POMM at the grid is not rejected by statistical test 
-   that samples sets of sequences from the POMM, computes Pc distribution, and the Pb of the observed 
-   seuqences is accepted with p > p_value. 
-   input parameters:
-       osIn - list of observed sequences. Symbols must be 1,2,...,n, where n is the number of symbols. 
-       SIn - starting state vector, default [] for starting from the Markov Model. 
-       maxIterBW - maximum number of iterations for BW to find P for a POMM,
-       nRerunBW - number of reruns for BW to find P for a POMM. 
-       maxNumSearch - maximum number of times of search 
-       nProc - number of processes used for BW
-       maxNumStates - maximum number of states for stopping the search. 
-       pValue - p-value for accepting the POMM using Pc. 
-       nSample - number of samples for calculating pValue. 
-   return:
-       S - the final state
-       P - the final transition prob
-       pv - p-value of the observed seqeunce
-       PBs - PBs sampled from the final model
-       PbT - Pb of the observed sequences on the final model
+        Default POMM inferenece method
    
-   MinPOMMSimpDeleteStates(S,osIn,nProc = 2, nRerun = 50, pValue=pValue, nSample=10000)
-   Simplify by deleting states and making sure that the maximum likelihood remains within bound. 
-   Input parameters:
-       S - initial POMM
-       osIn - observed sequences
-       nProc - number of processes for parallel computing in BWPOMMFun
-       nRerun - number of times B-W is run with different seeds. 
+        Construct POMM using n-gram model.
+        Successively build n-gram transition models, and test for Pbeta significance.
+        Then merge states. 
+   
+        S, P, pv, PBs, PbT = NGramPOMMSearch(osIn, pValue=0.05, Pcut=0.001, stateMergeParam=[1, 0.1, 0.1], nProc=2, nSample = 10000, ngramStart = 1, fnSave=''):
 
-   Return S, P, pv, PBs, PbT, Pc
-       S - state vector
-       P - transition probabilities
-       pv - p value of the final model
-       PBs - sampled distribution of Pb
-       PbT - Pb of the observed sequences
-       Pc - sequence completeness
+        NGramPOMMSearch(osIn, nRerun = 100, pValue=0.05, nProc=2,nSample = 10000, ngramStart = 1)
 
+        Construct POMM using n-gram model.
+        Successively build n-gram transition models, and test for Pbeta significance.
+        Then merge states. Then delete states. 
 
-   MinPOMMSimp(S,osIn,minP = 0.001,nProc = 2, nRerun = 50, pValue=pValue, nSample=10000, factors=[1.0,0.5,0.2,0.1])
-   Simplify by deleting connections and making sure that the maximum likelihood remains within bound. 
-   Input parameters:
-       S - initial POMM
-       osIn - observed sequences
-       minP - minimum P for accepting the connection as non-zero. 
-       nProc - number of processes for parallel computing in BWPOMMFun
-       nRerun - number of times B-W is run with different seeds. 
-       pValue - final model needs to clear the pValue. 
-       factors - factors for deciding the threshold of cuts. 
-   Return S, P, pv, PBs, PbT
-       S - state vector
-       P - transition probabilities
-       pv - pv achieved after cutting. 
-       PBs - sampled PBs 
-       PbT - of the observed sequences
-
-
-   getPVSampledSeqsPOMM(S, P, osIn,nSample = 10000, nProc=2)
-   get the p-value of the observed seqeunces against the Pb of the sampled sequences for a given POMM
-   This method is through generating sequences from POMM
-   Inputs:
-       S, state vector
-       P, transition probabilities
-        osIn, observed sequence
-        nSample, number of samples, default 10000
-        nProc, number of processors used
-    Returns:
-        pv, p-value of the observed sequence on the model.
-        PBs, modified sequence completeness sampled
-        PbT, modified sequence completeness of the observed sequences
- 
- 
-    getPVSampledSeqsPOMMnoPbDistr(S, P, osIn, nSample = 10000, nProc=2):
-    get p-value of the observed sequences against the Pb of the sampled sequences for a given POMM. 
-    To save memory usage, the PBs are not stored. 
-    Instead, the number of times sampled Pb is larger that PbT (+1e-10 to break ties) are recorded. 
-    These are used to compute pv.
-    Inputs:
-        S, state vector
-        P, transition probabilities
-        osIn, observed sequence
-        nSample, number of samples, default 10000
-        nProc, number of processors used
-    Returns:
-        pv, p-value of the observed sequence on the model.
-        PbT, sequence completeness of the observed sequences. 
- 
- 
-    getUniqueSequences(osIn)
-    Input:
-        osIn, list of sequences
-    Returns:
-        osU, unique sequences
-        osK, number of times the unique sequences appear
-        symU, symbols.
- 
- 
-    BWPOMMCParallel(S,osInO,C=[],maxSteps=5000,pTol=1e-6, nRerun=100, nProc = 2)
-    Parallel version of BWPOMM, calling C function BWPOMMC from libPOMM.h   
-    Inputs:
-        S, state vector
-        osInO, observed sequences
-        C, connectivity matrix, 1 or 0, those with 0 are cut.
-        maxSteps, maximum number of steps for updating the transition probabilities
-        pTol, tolerance for the transition probabilities
-        nRerun, number of times the algorithm is run. 
-        nProc, number of processors used. 
-    Returns:
-        P, computed transition matrix
-        MLmax, maximum log likelihood
-        Pc, sequence completeness of the input sequences on the model
-        stdML, standard deviation of the maximum likelihood achieved for all runs. 
-        MK, list of maximum likelihoods
- 
- 
-    getUniuqeSequencesProbConfidenceIntervals(osK, alpha)
-    get the confidence intervals of the probabilities of unique sequences
-    Input
-        osK - counts of the occurances of unique sequences
-        alpha - significance level
-    Output
-        pL - array, lower bounds of the confidence intervals
-        pU - array, upper bounds of the confidence intervals. 
- 
- 
-    computeLogLike(S,P,osU,osK)
-    Compute log likelihood of the seqeucens given the POMM. 
-    inputs
-        S, states
-        P, transition matrix
-        osU, unique sequences
-        osK, counts. 
-    returns
-        llk, log likelihood.
- 
- 
-    normP(P)
-    normalize the transition matrix. Enforce the fact that the first row is the start state, and the second row is the end state. 
- 
- 
-    generateSequencePOMM(S,P,nseq)
-    given the state transition matrix, generate the observed seqeunces.
-    Assumptionm, S[0], S[1] are the start and the end states. 
-    Inputs:
-        S, state vector
-        P, transition probability
-        nseq, number of sequences to be generated
-    Output:
-        gs, generated sequences
- 
-    printP(P)
-    print the transition matrix in a nice form.
- 
-    
-    getSequenceProbModel(S,P,osIn,osU = [])
-    Given the model, compute the probabilities of unique sequences in osIn. 
-    Input parameters:
-        S, states
-        P, transition probabilities
-        osIn, observed sequences.
-        osU, unique sequences in osIn. If empty, computed. 
-    Returns osU, PU
-        osU, unique sequences
-        PU, probabilities of unique sequences.  
- 
-    computeSequenceCompleteness(S,P,osIn,osU = [])
-    compute the sum of the probabilities of all unique sequences given the state machine.   
-    Inputs
-        S, states
-        P, transition probabilities
-        osIn, observed sequences.
-        osU, unique sequences in osIn. If empty, computed. 
-    Outputs
-        Pc, sequence completeness
-        Ps, probabilities of the sequences
- 
- 
-    computeSequenceProb(ss, S, P)
-    compute the probability of the sequence given the model
-    Inputs: 
-        ss, sequence
-        S, state vector
-        P, transition matrix
-    Returns
-        ps, probability of the sequence. 
- 
- 
-    stateSeq, prob = SeqcomputeMostProbableStateSequence(S,P,seq)
- 
-    compute the most likely path of the state given the sequence
-    Input:
-        S - state vector
-        P - transition probabilities
-        seq - sequence
-    Return:
-        stateSeq - the most probable state sequence
-        prob - probability of the most probable sequence
- 
- 
-    SampleTransitionCounts(P,N)
-    This function returns the number of transition sampled with transition probability P.
-    The total number of sampling is N.  
-    Inputs: 
-        P, 1d array, transition probabilities
-        N, number of transitions sampled.
-    Returns"
-        C, 1d array, number of times each choice is selected. 
- 
- 
-    ConstructMarkovModel(osIn,syms,pcut = 0.0)
-    This function constructs Markov model 
-    Inputs:
-        osIn, List of input sequences
-        syms, symbols in the seuqencs       
-    return 
-        P, transition matrix 
-        S, state vector
-        C, counts of transitions
- 
-    CreateMarkovModelFanout(nSyms,nFanOut)
-    create a Markov model with nSyms, with the fan out from each state maxed to nFanout. 
-    the transition probabilities are equal for each transition. 
-    Inputs
-        nSyms - number of symbols
-        nFanOut - maximum number of fan out. the number of fan out can be small if some unreachable states are deleted.
-    returns 
-        S, state vector 
-        P, transition matrix
- 
-    CreatePOMMFanout(nSyms,nExtra,nFanOut)
-    create a POMM with nSyms, with the fan out from each state maxed to nFanout. 
-    the transition probabilities are equal for each transition. 
-    Inpits:
-        nSyms - number of symbols
-        nExtra - number of extra states for each symbol
-        nFanOut - maximum number of fan out. the number of fan out can be small if some unreachable states are deleted.
-    Returns: 
-        S, state vector 
-        P, transition matrix
- 
-    
-    removeUnreachableStates(S,P)
-    remove states that are unreachiable from the start state. Keep the transitions to the end states.   
-    Inputs:
-        S, P
-    Returns:
-        S, P
- 
- 
-    deleteTransitionSmallProb(S,P,Pcut = 0.01)
-    detete connections with small transition probabilities.     
-    Inputs:
-        S, state vector
-        P, transition matrix
-        Pcut, transition probability threshold for cutting. 
- 
- 
-    convertToNumericalSequences(seqsIn,symsIn)
-    convert sequences into numerical sequences with syms from 1 - n, where n is the number of symbols.
-    Inputs:
-        seqsIn, input sequences, array of arrays
-        symsIn, symbols in the input sequences, array
-    returns:
-        seqs, numerical sequences
-        syms,numerical syms corresponding to symsIn, basically the numerical order of a symbol in symsIn
- 
- 
-    getNumericalSequencesNonRepeat(seqs,syllableLabels)
-    Get non-repeat sequences in numberical form read for analysis from strings. 
-    Inputs
-        seqs, sequences
-        syllableLabels, labels of syllables in the sequences
-    returns 
-        osIn, numerical sequences generated
-        repeatNumSeqs, repeat numbers of each syllable in the sequence. 
-        Syms, dictionary converging syms to numerics
-        Syms2, dictionary converging numerics to syms  
- 
- 
-    plotTransitionDiagram(S,P,Pcut=0.01,filenameDot='temp.dot',filenamePDF='temp.pdf',removeUnreachable=False,markedStates=[],labelStates=0)
-    plot the transition matrix diagram using Graphviz. 
-    Inputs:
-        S, symbols associated with the states. 
-        P, transition matrix. 
-        Pcut, do not plot if the transition probability is below Pcut. 
-        filenameDot, filenamePDF, filenames for storing the dot file and the PDF file. 
- 
- 
-    plotTwoPOMMsStateCorrespondences(S1,P1,Syms21,S2,P2,Syms22,StateCorres21,filenameDot)
-    plot two POMM models in a way such that the corresponding states occupy the same positions. 
-    parameteres:
-        S1, P1, Syms21 - POMM 1, state vector, transition probabilities, Syms2
-        S2, P2, Syms22 - POMM 2
-        StateCorres21 - disctionary of state correspondence from POMM 2 to POMM 1. 
-        filenameDot - filename of the dot file created. 
- 
-    plotSequenceCompleteness(PCs,ylimMax=-1,xlimlow=0, width=0.02, ticks = [0,0.5,1])
-    plot sequence completeness in a nice way. 
- 
- 
-    randomSelectInd(nind, ntot, excludeInd = -1)
-    randomly select nind out of ntot
-    excludeInd != -1, exclude this index. 
+        Inputs: 
         
- 
-    MergeStates(S,P,mergeInds)
-    merge states, keep the state vector structure but change the transition probability matrix
-    merge state ii to jj. The list is given in mergeInds
-    NOTE: merge is order dependent! Do not merge into empty state (1,2), (3,1) would be wrong because 1 is empty after (1,2). 
-    keep the connections, recalcuate the transition proabilities. 
-    returns updated transition probabilties. 
- 
-    getStepProbability(osT,nSym,nSteps)
-    get the step probability distribution.      
-    Inputs:
-        osT, sequences, symbols are numerical 1 to nSym
-        nSym, number of sylmols 
-        nStep, number of steps for computing the probabilities. 
-     Return
-        PSteps, nStep x (nSym+1) matrix. PSteps[:,0] is the probability of ending at the steps. 
- 
- 
-    MergeStatesRecalculateP(S,P,mergeInds,osT,maxIterBW=1000,nRerunBW=100,nProc=2)
-    merge states, keep the state vector structure but change the transition probability matrix
-    merge state ii to jj. The list is given in mergeInds
-    NOTE: merge is order dependent! Do not merge into empty state (1,2), (3,1) would be wrong because 1 is empty after (1,2). 
-    keep the connections, recalcuate the transition proabilities. 
-    recalculate the transition probabilities with input sequencnes. 
-    returns updated transition probabilties. 
-    Inputs:
-        S - state vector
-        P - transitinn probabilities
-        mergeInds - list of pair of indices (ii,jj), merging state ii to state jj. 
-        maxIterBW, nRerunBW, nProc, parameters for BW algorithm. 
-    Return:
-        P2 - transition matrix. 
- 
- 
-    generateSequenceSamples(S,P,N,nSample=nSample,nProc=nProc)
-    generegate nSample sets of N sequences from the POMM. 
-    Inputs:
-        S - state vector
-        P - transition matrix
-        N - number of sequences in each set.
-        nSample - number of sets sampled. 
-        nProc - number of processes used. 
-    Return:
-        osSampled - sampled sets of sequences
- 
-    computePsStatsInSamples(osTSamples,ss,Ps0,nProc=nProc)  
-    compute the Ps of subsequence ss in the sampled seqeunces, return confidence intervals. 
-    Inputs:
-        osTSamples - sampled sequences
-        ss - subsequence
-        Ps0 - Ps of the subsequence in the observed set
-        nProc - number of process used
-    Returns:
-        pv - p-value of the observed Ps0 being larger than the smapled. 
-        pL - lower bound of Ps in 95% confidence interval
-        pS - upper bound of Ps in 95% confidence interval   
-        pMedian - median value of the distribution
- 
- 
-    computeNumTasksProc(nTot, nProc = 2)
-    blance load on multiple process, returns arrar of number of computations each process should handle. 
-    usefule wen nStask is not multiples of nProc
-    Inputs:
-        nTot - total number of tasks
-        nProc - number of processors
-    returns
-        NS - list of length nProc, number of tasks assinged to each processor
- 
-    RemoveRareSequences(osIn, pCut = 0.001)
-    remove unique sequences with probability smaller than pCut. 
-    Inputs:
-        osIn - list of sequences
-        pCut - sequences with probability smaller that pCut are deleted
-    Retuts:
-        osOut - list of sequences returned. 
- 
-    getSequenceCompletenessSampleToSample(osRef, osIn)  
-    Compute sequence completeness comparing samples
-    Inputs:
-        osRef - reference sequences
-        osIn  - sequences to be compared
-    Returns:
-        Pc - sequence completeness
- 
-    plotSequenceLengthDistribution(seqs,fn='')
-    Plot sequence length distribution and save to fn.           
- 
-    plotProbDistribution(Ps,ylimMax=-1,xlimlow=0, width=0.02, xticks = [0,0.2,0.4,0.6,0.8,1],yticks = [])   
-    plot sequence completeness in a nice way. 
- 
-  AIC = computeAIC(S,P,osU,osK) 
-  compute AIC score given the model. 
-  parameters:
-    S - state vectorr
-    P - transition probabilities
-    osIn - observed sequences
-  return:
-    AIC
+        osIn    - list of observed sequences. Symbols must be 1,2,...,n, where n is the number of symbols. 
+        nProc   - number of processes used for BW
+        pValue  - p-value for accepting the POMM using Pc. 
+        nSample - number of samples for calculating pValue. 
+        ngramStart - starting ngram, 1, MARKOV, 2, second oreder Markov, etc.
+        Pcut - ignore transition probabilities below this value
+        stateMergeParam - [maxV, minV, step], state merging parameter, max, min, and step stize. 
+                                        Values tested from maxV to minV decreasing with stepSize. Stops for the fist pv > pValue. 
+                                        The parameter ranges from 1 to 0. As it decreases, the model becomes more complex.
+                                        Adjust maxV, minV, step for your sequences. 
+
+        Return: 
+        
+        S - the final state
+        P - the final transition prob
+        pv - p-value of the observed seqeunce
+        PBs - PBs sampled from the final model
+        PbT - Pb of the observed sequences on the final model
+        
+   Some other usefyl functions     
+
+       getPVSampledSeqsPOMM(S, P, osIn,nSample = 10000, nProc=2)
+       get the p-value of the observed seqeunces against the Pb of the sampled sequences for a given POMM
+       This method is through generating sequences from POMM
+       Inputs:
+           S, state vector
+           P, transition probabilities
+            osIn, observed sequence
+            nSample, number of samples, default 10000
+            nProc, number of processors used
+        Returns:
+            pv, p-value of the observed sequence on the model.
+            PBs, modified sequence completeness sampled
+            PbT, modified sequence completeness of the observed sequences
+     
+     
+        getPVSampledSeqsPOMMnoPbDistr(S, P, osIn, nSample = 10000, nProc=2):
+        get p-value of the observed sequences against the Pb of the sampled sequences for a given POMM. 
+        To save memory usage, the PBs are not stored. 
+        Instead, the number of times sampled Pb is larger that PbT (+1e-10 to break ties) are recorded. 
+        These are used to compute pv.
+        Inputs:
+            S, state vector
+            P, transition probabilities
+            osIn, observed sequence
+            nSample, number of samples, default 10000
+            nProc, number of processors used
+        Returns:
+            pv, p-value of the observed sequence on the model.
+            PbT, sequence completeness of the observed sequences. 
+     
+     
+        getUniqueSequences(osIn)
+        Input:
+            osIn, list of sequences
+        Returns:
+            osU, unique sequences
+            osK, number of times the unique sequences appear
+            symU, symbols.
+     
+     
+        BWPOMMCParallel(S,osInO,C=[],maxSteps=5000,pTol=1e-6, nRerun=100, nProc = 2)
+        Parallel version of BWPOMM, calling C function BWPOMMC from libPOMM.h   
+        Inputs:
+            S, state vector
+            osInO, observed sequences
+            C, connectivity matrix, 1 or 0, those with 0 are cut.
+            maxSteps, maximum number of steps for updating the transition probabilities
+            pTol, tolerance for the transition probabilities
+            nRerun, number of times the algorithm is run. 
+            nProc, number of processors used. 
+        Returns:
+            P, computed transition matrix
+            MLmax, maximum log likelihood
+            Pc, sequence completeness of the input sequences on the model
+            stdML, standard deviation of the maximum likelihood achieved for all runs. 
+            MK, list of maximum likelihoods
+     
+     
+        getUniuqeSequencesProbConfidenceIntervals(osK, alpha)
+        get the confidence intervals of the probabilities of unique sequences
+        Input
+            osK - counts of the occurances of unique sequences
+            alpha - significance level
+        Output
+            pL - array, lower bounds of the confidence intervals
+            pU - array, upper bounds of the confidence intervals. 
+     
+     
+        computeLogLike(S,P,osU,osK)
+        Compute log likelihood of the seqeucens given the POMM. 
+        inputs
+            S, states
+            P, transition matrix
+            osU, unique sequences
+            osK, counts. 
+        returns
+            llk, log likelihood.
+     
+     
+        normP(P)
+        normalize the transition matrix. Enforce the fact that the first row is the start state, and the second row is the end state. 
+     
+     
+        generateSequencePOMM(S,P,nseq)
+        given the state transition matrix, generate the observed seqeunces.
+        Assumptionm, S[0], S[1] are the start and the end states. 
+        Inputs:
+            S, state vector
+            P, transition probability
+            nseq, number of sequences to be generated
+        Output:
+            gs, generated sequences
+     
+        printP(P)
+        print the transition matrix in a nice form.
+     
+        
+        getSequenceProbModel(S,P,osIn,osU = [])
+        Given the model, compute the probabilities of unique sequences in osIn. 
+        Input parameters:
+            S, states
+            P, transition probabilities
+            osIn, observed sequences.
+            osU, unique sequences in osIn. If empty, computed. 
+        Returns osU, PU
+            osU, unique sequences
+            PU, probabilities of unique sequences.  
+     
+        computeSequenceCompleteness(S,P,osIn,osU = [])
+        compute the sum of the probabilities of all unique sequences given the state machine.   
+        Inputs
+            S, states
+            P, transition probabilities
+            osIn, observed sequences.
+            osU, unique sequences in osIn. If empty, computed. 
+        Outputs
+            Pc, sequence completeness
+            Ps, probabilities of the sequences
+     
+     
+        computeSequenceProb(ss, S, P)
+        compute the probability of the sequence given the model
+        Inputs: 
+            ss, sequence
+            S, state vector
+            P, transition matrix
+        Returns
+            ps, probability of the sequence. 
+     
+     
+        stateSeq, prob = SeqcomputeMostProbableStateSequence(S,P,seq)
+     
+        compute the most likely path of the state given the sequence
+        Input:
+            S - state vector
+            P - transition probabilities
+            seq - sequence
+        Return:
+            stateSeq - the most probable state sequence
+            prob - probability of the most probable sequence
+     
+     
+        SampleTransitionCounts(P,N)
+        This function returns the number of transition sampled with transition probability P.
+        The total number of sampling is N.  
+        Inputs: 
+            P, 1d array, transition probabilities
+            N, number of transitions sampled.
+        Returns"
+            C, 1d array, number of times each choice is selected. 
+     
+     
+        ConstructMarkovModel(osIn,syms,pcut = 0.0)
+        This function constructs Markov model 
+        Inputs:
+            osIn, List of input sequences
+            syms, symbols in the seuqencs       
+        return 
+            P, transition matrix 
+            S, state vector
+            C, counts of transitions
+     
+        CreateMarkovModelFanout(nSyms,nFanOut)
+        create a Markov model with nSyms, with the fan out from each state maxed to nFanout. 
+        the transition probabilities are equal for each transition. 
+        Inputs
+            nSyms - number of symbols
+            nFanOut - maximum number of fan out. the number of fan out can be small if some unreachable states are deleted.
+        returns 
+            S, state vector 
+            P, transition matrix
+     
+        CreatePOMMFanout(nSyms,nExtra,nFanOut)
+        create a POMM with nSyms, with the fan out from each state maxed to nFanout. 
+        the transition probabilities are equal for each transition. 
+        Inpits:
+            nSyms - number of symbols
+            nExtra - number of extra states for each symbol
+            nFanOut - maximum number of fan out. the number of fan out can be small if some unreachable states are deleted.
+        Returns: 
+            S, state vector 
+            P, transition matrix
+     
+        
+        removeUnreachableStates(S,P)
+        remove states that are unreachiable from the start state. Keep the transitions to the end states.   
+        Inputs:
+            S, P
+        Returns:
+            S, P
+     
+     
+        deleteTransitionSmallProb(S,P,Pcut = 0.01)
+        detete connections with small transition probabilities.     
+        Inputs:
+            S, state vector
+            P, transition matrix
+            Pcut, transition probability threshold for cutting. 
+     
+     
+        convertToNumericalSequences(seqsIn,symsIn)
+        convert sequences into numerical sequences with syms from 1 - n, where n is the number of symbols.
+        Inputs:
+            seqsIn, input sequences, array of arrays
+            symsIn, symbols in the input sequences, array
+        returns:
+            seqs, numerical sequences
+            syms,numerical syms corresponding to symsIn, basically the numerical order of a symbol in symsIn
+     
+     
+        getNumericalSequencesNonRepeat(seqs,syllableLabels)
+        Get non-repeat sequences in numberical form read for analysis from strings. 
+        Inputs
+            seqs, sequences
+            syllableLabels, labels of syllables in the sequences
+        returns 
+            osIn, numerical sequences generated
+            repeatNumSeqs, repeat numbers of each syllable in the sequence. 
+            Syms, dictionary converging syms to numerics
+            Syms2, dictionary converging numerics to syms  
+     
+     
+        plotTransitionDiagram(S,P,Pcut=0.01,filenameDot='temp.dot',filenamePDF='temp.pdf',removeUnreachable=False,markedStates=[],labelStates=0)
+        plot the transition matrix diagram using Graphviz. 
+        Inputs:
+            S, symbols associated with the states. 
+            P, transition matrix. 
+            Pcut, do not plot if the transition probability is below Pcut. 
+            filenameDot, filenamePDF, filenames for storing the dot file and the PDF file. 
+     
+     
+        plotTwoPOMMsStateCorrespondences(S1,P1,Syms21,S2,P2,Syms22,StateCorres21,filenameDot)
+        plot two POMM models in a way such that the corresponding states occupy the same positions. 
+        parameteres:
+            S1, P1, Syms21 - POMM 1, state vector, transition probabilities, Syms2
+            S2, P2, Syms22 - POMM 2
+            StateCorres21 - disctionary of state correspondence from POMM 2 to POMM 1. 
+            filenameDot - filename of the dot file created. 
+     
+        plotSequenceCompleteness(PCs,ylimMax=-1,xlimlow=0, width=0.02, ticks = [0,0.5,1])
+        plot sequence completeness in a nice way. 
+     
+     
+        randomSelectInd(nind, ntot, excludeInd = -1)
+        randomly select nind out of ntot
+        excludeInd != -1, exclude this index. 
+            
+     
+        MergeStates(S,P,mergeInds)
+        merge states, keep the state vector structure but change the transition probability matrix
+        merge state ii to jj. The list is given in mergeInds
+        NOTE: merge is order dependent! Do not merge into empty state (1,2), (3,1) would be wrong because 1 is empty after (1,2). 
+        keep the connections, recalcuate the transition proabilities. 
+        returns updated transition probabilties. 
+     
+        getStepProbability(osT,nSym,nSteps)
+        get the step probability distribution.      
+        Inputs:
+            osT, sequences, symbols are numerical 1 to nSym
+            nSym, number of sylmols 
+            nStep, number of steps for computing the probabilities. 
+         Return
+            PSteps, nStep x (nSym+1) matrix. PSteps[:,0] is the probability of ending at the steps. 
+     
+     
+        MergeStatesRecalculateP(S,P,mergeInds,osT,maxIterBW=1000,nRerunBW=100,nProc=2)
+        merge states, keep the state vector structure but change the transition probability matrix
+        merge state ii to jj. The list is given in mergeInds
+        NOTE: merge is order dependent! Do not merge into empty state (1,2), (3,1) would be wrong because 1 is empty after (1,2). 
+        keep the connections, recalcuate the transition proabilities. 
+        recalculate the transition probabilities with input sequencnes. 
+        returns updated transition probabilties. 
+        Inputs:
+            S - state vector
+            P - transitinn probabilities
+            mergeInds - list of pair of indices (ii,jj), merging state ii to state jj. 
+            maxIterBW, nRerunBW, nProc, parameters for BW algorithm. 
+        Return:
+            P2 - transition matrix. 
+     
+     
+        generateSequenceSamples(S,P,N,nSample=nSample,nProc=nProc)
+        generegate nSample sets of N sequences from the POMM. 
+        Inputs:
+            S - state vector
+            P - transition matrix
+            N - number of sequences in each set.
+            nSample - number of sets sampled. 
+            nProc - number of processes used. 
+        Return:
+            osSampled - sampled sets of sequences
+     
+        computePsStatsInSamples(osTSamples,ss,Ps0,nProc=nProc)  
+        compute the Ps of subsequence ss in the sampled seqeunces, return confidence intervals. 
+        Inputs:
+            osTSamples - sampled sequences
+            ss - subsequence
+            Ps0 - Ps of the subsequence in the observed set
+            nProc - number of process used
+        Returns:
+            pv - p-value of the observed Ps0 being larger than the smapled. 
+            pL - lower bound of Ps in 95% confidence interval
+            pS - upper bound of Ps in 95% confidence interval   
+            pMedian - median value of the distribution
+     
+     
+        computeNumTasksProc(nTot, nProc = 2)
+        blance load on multiple process, returns arrar of number of computations each process should handle. 
+        usefule wen nStask is not multiples of nProc
+        Inputs:
+            nTot - total number of tasks
+            nProc - number of processors
+        returns
+            NS - list of length nProc, number of tasks assinged to each processor
+     
+        RemoveRareSequences(osIn, pCut = 0.001)
+        remove unique sequences with probability smaller than pCut. 
+        Inputs:
+            osIn - list of sequences
+            pCut - sequences with probability smaller that pCut are deleted
+        Retuts:
+            osOut - list of sequences returned. 
+     
+        getSequenceCompletenessSampleToSample(osRef, osIn)  
+        Compute sequence completeness comparing samples
+        Inputs:
+            osRef - reference sequences
+            osIn  - sequences to be compared
+        Returns:
+            Pc - sequence completeness
+     
+        plotSequenceLengthDistribution(seqs,fn='')
+        Plot sequence length distribution and save to fn.           
+     
+        plotProbDistribution(Ps,ylimMax=-1,xlimlow=0, width=0.02, xticks = [0,0.2,0.4,0.6,0.8,1],yticks = [])   
+        plot sequence completeness in a nice way. 
+     
+      AIC = computeAIC(S,P,osU,osK) 
+      compute AIC score given the model. 
+      parameters:
+        S - state vectorr
+        P - transition probabilities
+        osIn - observed sequences
+      return:
+        AIC
 
 
-    S, P, SnumVis = constructNGramPOMM(osIn, ng);
+        S, P, SnumVis = constructNGramPOMM(osIn, ng);
 
-    Constructs ngram POMM model from the sequences osIn.
-    Inputs:
+        Constructs ngram POMM model from the sequences osIn.
+        Inputs:
 
-        osIn    - observed sesequences
-        ng      - length of order of the ngram Markov model. ng=1 is the Markov model, ng=2 is the 2nd order Markov model, etc
-    
-    Returns:
-    
-        S       - State vector
-        P       - Transition probabilities
-        SnumVis - number of times a state visited. 
+            osIn    - observed sesequences
+            ng      - length of order of the ngram Markov model. ng=1 is the Markov model, ng=2 is the 2nd order Markov model, etc
+        
+        Returns:
+        
+            S       - State vector
+            P       - Transition probabilities
+            SnumVis - number of times a state visited. 
+        
+  Maybe useful but depreciated
+
+       TreePOMMSearch(osIn, nRerun = 100, pValue=0.05, nProc=2,nSample = 10000)
+       Construct POMM using tree model as the starting point.
+       Start with the tree model, then merge states. Then delete states. 
+           osIn - list of observed sequences. Symbols must be 1,2,...,n, where n is the number of symbols. 
+           nProc - number of processes used for BW
+           pValue - p-value for accepting the POMM using Pc. 
+           nSample - number of samples for calculating pValue. 
+           nRerun - number of time BW algorith is rerun during the state deletion process
+
+       return: S, P, pv, PBs, PbT, Pc
+           S - the final state
+           P - the final transition prob
+           pv - p-value of the observed seqeunce
+           PBs - PBs sampled from the final model
+           PbT - Pb of the observed sequences on the final model
+           Pc - sequennce completenss
+
+
+       MinPOMMGrid(osIn,maxNumStates=50,maxIterBW=1000,nRerunBW=50,maxNumSearch=1000,pValue=pValue,nProc=2,nSample = 10000)
+       Search for the minimum POMM describing the seqeunces.
+       From the start state, the algorithm searches nearby grid points, and selects the one with maximum likelihood. 
+       The grid point is accepted if the POMM at the grid is not rejected by statistical test 
+       that samples sets of sequences from the POMM, computes Pb distribution, and the Pb of the observed 
+       seuqences is accepted with p > p_value. 
+       input parameters:
+           osIn - list of observed sequences. Symbols must be 1,2,...,n, where n is the number of symbols. 
+           maxNumStates - upper limit of number of states for each symbol. 
+           maxIterBW - maximum number of iterations for BW to find P for a POMM,
+           nRerunBW - number of reruns for BW to find P for a POMM. 
+           maxNumSearch - maximum number of times of search 
+           nProc - number of processes used for BW
+           nSample - number of samples used for computing pV
+           pValue - p-value for accepting the POMM on the grid. 
+       return:
+           S0 - the final state
+           P0 - the final transition prob
+           MLT - maximum likelihood on the grids searched and test sets
+           pv - p-value of the observed seqeunce
+           PBs - PBs sampled from the final model
+           PbT - Pb of the observed sequences on the final model
+       
+       MinPOMMExpansionDeletion(osIn,SIn=[],maxNumStates=50,maxIterBW=1000,nRerunBW=50,maxNumSearch=1000,pValue=pValue,nProc=2,nSample = 10000)
+       Search for the minimum POMM describing the sequences.
+       First expand the state in the diagonal directions [1,1,1,...], [2,2,2,...],[3,3,...], then delete
+       The grid point is accepted if the POMM at the grid is not rejected by statistical test 
+       that samples sets of sequences from the POMM, computes Pc distribution, and the Pb of the observed 
+       seuqences is accepted with p > p_value. 
+       input parameters:
+           osIn - list of observed sequences. Symbols must be 1,2,...,n, where n is the number of symbols. 
+           SIn - starting state vector, default [] for starting from the Markov Model. 
+           maxIterBW - maximum number of iterations for BW to find P for a POMM,
+           nRerunBW - number of reruns for BW to find P for a POMM. 
+           maxNumSearch - maximum number of times of search 
+           nProc - number of processes used for BW
+           maxNumStates - maximum number of states for stopping the search. 
+           pValue - p-value for accepting the POMM using Pc. 
+           nSample - number of samples for calculating pValue. 
+       return:
+           S - the final state
+           P - the final transition prob
+           pv - p-value of the observed seqeunce
+           PBs - PBs sampled from the final model
+           PbT - Pb of the observed sequences on the final model
+       
+       MinPOMMSimpDeleteStates(S,osIn,nProc = 2, nRerun = 50, pValue=pValue, nSample=10000)
+       Simplify by deleting states and making sure that the maximum likelihood remains within bound. 
+       Input parameters:
+           S - initial POMM
+           osIn - observed sequences
+           nProc - number of processes for parallel computing in BWPOMMFun
+           nRerun - number of times B-W is run with different seeds. 
+
+       Return S, P, pv, PBs, PbT, Pc
+           S - state vector
+           P - transition probabilities
+           pv - p value of the final model
+           PBs - sampled distribution of Pb
+           PbT - Pb of the observed sequences
+           Pc - sequence completeness
+
+
+       MinPOMMSimp(S,osIn,minP = 0.001,nProc = 2, nRerun = 50, pValue=pValue, nSample=10000, factors=[1.0,0.5,0.2,0.1])
+       Simplify by deleting connections and making sure that the maximum likelihood remains within bound. 
+       Input parameters:
+           S - initial POMM
+           osIn - observed sequences
+           minP - minimum P for accepting the connection as non-zero. 
+           nProc - number of processes for parallel computing in BWPOMMFun
+           nRerun - number of times B-W is run with different seeds. 
+           pValue - final model needs to clear the pValue. 
+           factors - factors for deciding the threshold of cuts. 
+       Return S, P, pv, PBs, PbT
+           S - state vector
+           P - transition probabilities
+           pv - pv achieved after cutting. 
+           PBs - sampled PBs 
+           PbT - of the observed sequences
+  
 
 """
 
@@ -1332,36 +1361,16 @@ def testConstructNGramPOMM():
             removeUnreachable=False,markedStates=[])    
 
 
-    
-""" 
-    S, P, pv, PBs, PbT, Pc = NGramPOMMSearch(osIn, nRerun = 100, pValue=0.05, nProc=2,nSample = 10000, ngramStart = 1)
+def AdjustTransProbWithBWKeepConnections(S,P,osIn,nRerun=100,Pcut=0.001):
+    N = len(S)
+    C = zeros((N,N))
+    C[where(P > Pcut)] = 1.0
+    P, ml, Pc, stdml, ML = BWPOMMCParallel(S,osIn,C=C, Pcut= 0.001, nRerun=nRerun, nProc = nProc)    
+    S, P = removeUnreachableStates(S,P)    
+    return S, P, Pc
 
-    Construct POMM using n-gram model.
-    Successively build n-gram transition models, and test for Pbeta significance.
-    Then merge states. Then delete states. 
-
-    Inputs: 
-    
-    osIn    - list of observed sequences. Symbols must be 1,2,...,n, where n is the number of symbols. 
-    nProc   - number of processes used for BW
-    pValue  - p-value for accepting the POMM using Pc. 
-    nSample - number of samples for calculating pValue. 
-    nRerun  - number of time BW algorith is rerun during the state deletion process
-    ngramStart - starting ngram, 1, MARKOV, 2, second oreder Markov, etc.
-
-    Return: 
-    
-    S - the final state
-    P - the final transition prob
-    pv - p-value of the observed seqeunce
-    PBs - PBs sampled from the final model
-    PbT - Pb of the observed sequences on the final model
-    Pc - sequennce completenss
-
-"""
-
-def NGramPOMMSearch(osIn, nRerun = 100, pValue=0.05, nProc=2,nSample = 10000, ngramStart = 1, fnSave=''):
-    
+def NGramPOMMSearch(osIn, pValue=0.05, stateMergeParam=[1, 0.1, 0.1], Pcut=0.001, nProc=2, nSample = 10000, ngramStart = 1, fnSave=''):
+ 
     print('Constructing POMM with nGram transition diagram...')
     flag = 0
     maxNG = 200
@@ -1372,10 +1381,14 @@ def NGramPOMMSearch(osIn, nRerun = 100, pValue=0.05, nProc=2,nSample = 10000, ng
         S, P, SnumVis = constructNGramPOMMC(osIn, ng);
                     
         # test the statsicial signifance. 
-        pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nProc=nProc)
+        pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nSample=nSample, nProc=nProc)
         print(' Pb sampled range=(',round(PBs.min(),3),round(PBs.max(),3),') seq Pb=', round(PbT,3))
             
         print(' S=',S)
+
+        if fnSave != '':
+            saveNGramPOMMSearchRes(S,P,ng,pv,PbT,SnumVis,fnSave)
+
         if pv > pValue:
             print(' Accepted pv=',round(pv,3))
             flag = 1
@@ -1383,160 +1396,135 @@ def NGramPOMMSearch(osIn, nRerun = 100, pValue=0.05, nProc=2,nSample = 10000, ng
         else:
             print(' Rejected pv=',round(pv,3))
             
-        if fnSave != '':
-            saveNGramPOMMSearchRes(S,P,ng,pv,PbT,SnumVis,fnSave)
-                
-        
     if flag == 0:
         print('WARNING: in NGramPOMMSearch: no NGram model accepted up until ng=',ng)
         Pc = 0
         return S, P, pv, PBs, PbT
-        
-    # find symbols that need only one state: Markov symbols. 
-    print('Finding Markov symbols...')
-    syms = list(unique(S[2:]))
+ 
+    pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nSample=nSample, nProc=nProc)
+    print(f'Ngram model pv={pv:0.4f}')
     
-    for sm in syms:
-        iid = where(sm == array(S))[0]
-        if len(iid) <= 2: # if there are two states no need to do this since this can be tested in the merger test. 
-            continue
-        print(' ')  
-        print(' test merging all states for sym  = ',sm)
-        
-        N = len(S)
-        print(' S=',S)
-        ii = iid[0]
-        PTest = P.copy()
-        SnumVisTest = SnumVis[ii]
-                
-        for j in range(1,len(iid)):
-            jj = iid[j]         
-            for kk in range(N):
-                if kk == ii or kk == jj:
-                    continue
-                if SnumVisTest+SnumVis[jj] == 0:
-                    PTest[ii,kk] = 0
-                    PTest[jj,kk] = 0
-                    continue
-                PTest[ii,kk] = SnumVisTest*1.0/(SnumVisTest+SnumVis[jj]) * PTest[ii,kk] + \
-                               SnumVis[jj]*1.0/(SnumVisTest+SnumVis[jj]) * PTest[jj,kk]
-                PTest[jj,kk] = 0
-            PTest[jj,1] = 1.0
-            for kk in range(N):
-                if kk == ii or kk == jj:
-                    continue
-                PTest[kk,ii] = PTest[kk,ii] + PTest[kk,jj]
-                PTest[kk,jj] = 0
-            PTest[ii,jj] = 0
-            SnumVisTest += SnumVis[jj]
-        # test if the merge is good.        
-        PTest = normP(PTest)
-        
-        # check of some states are not reachable. 
-        C = zeros((N,N)).astype(int)
-        C[where(PTest >= 0.001)] = 1
-        # check if the end state can be reached from all other states. 
-        ireach = checkEndStateReachability(S,C)
-        if ireach == 0: # not all states have rout to the end state, indicating some kind of infinite loop!
-            print(' ERROR in NGramPOMMSearch: Not all states lead to the end state. Infinite loop detected. Skip the cut. ')
-            exit(1)
-        
-        pv, PBs, PbT = getPVSampledSeqsPOMM(S, PTest, osIn, nSample = nSample, nProc=nProc)
-        print('     Pb sampled range=(',round(PBs.min(),3),round(PBs.max(),3),') seq Pb=', round(PbT,3))
-        
-        if pv > pValue:
-            print('     merge accepted, Markov symbol, pv=',round(pv,3))
-            flag = 1
-            SnumVis[ii] = SnumVisTest
-            P = PTest.copy()
-            
-            for j in range(len(iid)-1,0,-1):
-                jj = iid[j]             
-                S = S[:jj] + S[jj+1:]
-                P = delete(P,jj,axis=0)
-                P = delete(P,jj,axis=1)
-                SnumVis = SnumVis[:jj] + SnumVis[jj+1:] 
-        else:   
-            print('     merge rejected.')
-            
-        if fnSave != '':
-            saveNGramPOMMSearchRes(S,P,ng,pv,PbT,SnumVis,fnSave)
-        
-    # test merge states.
-    syms = list(unique(S[2:]))
-    for sm in syms:
-        iid = where(sm == array(S))[0]
-        if len(iid) <= 1:
-            continue
-        print('Test merging states for sym  = ',sm)
-        iidsToDelete = []
-        N = len(S)
-        print(' S=',S)
-        for i in range(len(iid)):
-            ii = iid[i]
-            if ii in iidsToDelete:
-                continue
-            for j in range(i+1,len(iid)):
-                jj = iid[j]
-                if jj in iidsToDelete:
-                    continue
-                print(' test merging states (',ii,jj,') sym=',sm)
-                PTest = P.copy()
-                for kk in range(N):
-                    if kk == ii or kk == jj:
-                        continue
-                    if SnumVis[ii]+SnumVis[jj] == 0:
-                        PTest[ii,kk] = 0
-                        PTest[jj,kk] = 0
-                        continue
-                    PTest[ii,kk] = SnumVis[ii]*1.0/(SnumVis[ii]+SnumVis[jj]) * P[ii,kk] + \
-                                   SnumVis[jj]*1.0/(SnumVis[ii]+SnumVis[jj]) * P[jj,kk]
-                    PTest[jj,kk] = 0
-                PTest[jj,1] = 1.0
-                for kk in range(N):
-                    if kk == ii or kk == jj:
-                        continue
-                    PTest[kk,ii] = P[kk,ii] + P[kk,jj]
-                    PTest[kk,jj] = 0
-                PTest[ii,jj] = 0
-                PTest = normP(PTest)
-                # test if the merge is good. 
-                pv, PBs, PbT = getPVSampledSeqsPOMM(S, PTest, osIn, nSample = nSample, nProc=nProc)
-                print('     Pb sampled range=(',round(PBs.min(),3),round(PBs.max(),3),') seq Pb=', round(PbT,3))
+    # get all unique sequences of length ng
+    print(f'\nMerging states\n')
+    seqDict, symU = getUniqueSequencesByStartSymbol(osIn, ng+1)
+    
+    S0 = S
+    SnumVis0 = SnumVis
+    P0 = P.copy()
 
-                if pv > pValue:
-                    print('     merge accepted pv=',round(pv,3))
-                    flag = 1
-                    SnumVis[ii] = SnumVis[ii] + SnumVis[jj] 
-                    SnumVis[jj] = 0
-                    P = PTest.copy()
-                    iidsToDelete.append(jj) 
-                else:
-                    print('     merge rejected.')
+    mmax, mmin, step = stateMergeParam
+    if step <= 0:
+        raise ValueError("step must be positive")
+    mParams = []
+    vv = mmax
+    while vv >= mmin:
+        mParams.append(vv)
+        vv -= step    
+
+    for mergeClusterDistThreshod in mParams:
+        
+        S = S0
+        P = P0.copy()
+        SnumVis = SnumVis0
+        
+        print(f'\nTesting mergeClusterDistThreshod: {mergeClusterDistThreshod:.4f}')
+
+        for sm in symU:
+            
+            N = len(S)
+            iid = where(sm == array(S))[0]
+            
+            if len(iid) <= 1: # if there are one state no need to merge. 
+                continue
+                
+            print(' ')  
+            print(' merging states for sym  = ',sm)
+        
+            uSeqs = seqDict[sm]
+
+            # construct the probability matrix.
+            Pseqs = zeros((len(iid),len(uSeqs)))
+            for i, ii in enumerate(iid):
+                PTest = P.copy()
+                PTest[0,:] = 0.0
+                PTest[0,ii] = 1.0   # make the sequence start with state ii. 
+
+                for j, ss in enumerate(uSeqs):
+                    Pseqs[i, j] = computeSequenceProbNoEnd(ss, S, PTest) 
+                            
+            # clustering rows according to the probabilties across the unique sequences.        
+            row_sums = Pseqs.sum(axis=1, keepdims=True)
+            row_sums[row_sums == 0] = 1.0
+            X = Pseqs / row_sums
+
+            def tv_dist(u, v):
+                return 0.5 * sum(abs(u - v))
+
+            D = pdist(X, metric=tv_dist)      # condensed distance vector
+            Z = linkage(D, method='average')   # hierarchical clustering
+            labels = fcluster(Z, t=mergeClusterDistThreshod, criterion='distance')
+
+            print(" cluster labels =", labels)
+            
+            PTest = P.copy()
+            SnumVisTest = [nn for nn  in SnumVis]
+                                
+            for ll in set(labels):
+                kkd = where(array(labels) == ll)[0]
+                if len(kkd) < 2:
+                    continue
+                
+                # merge the states in the same cluster.     
+                ii = iid[kkd[0]]
+                for j in range(1,len(kkd)):
+                    jj = iid[kkd[j]]
+                    print(f'    merging states {ii}, {jj}')     
+                    for kk in range(N):
+                        if kk == ii or kk == jj:
+                            continue
+                        if SnumVis[ii]+SnumVis[jj] == 0:
+                            PTest[ii,kk] = 0
+                            PTest[jj,kk] = 0
+                            continue
                         
-        # delete states
-        if len(iidsToDelete) > 0:   
-            iidsToDelete = list(sort(iidsToDelete))
-            for jj in iidsToDelete[::-1]:
-                S = S[:jj] + S[jj+1:]
-                P = delete(P,jj,axis=0)
-                P = delete(P,jj,axis=1)
-                SnumVis = SnumVis[:jj] + SnumVis[jj+1:]
+                        PTest[ii,kk] = SnumVisTest[ii]*1.0/(SnumVisTest[ii]+SnumVisTest[jj]) * PTest[ii,kk] + \
+                                       SnumVisTest[jj]*1.0/(SnumVisTest[ii]+SnumVisTest[jj]) * PTest[jj,kk]
+                        PTest[jj,kk] = 0
+
+                    SnumVisTest[ii] += SnumVisTest[jj]
+                    SnumVisTest[jj] = 0                    
+                    PTest[jj,1] = 1.0
+                    
+                    for kk in range(N):
+                        if kk == ii or kk == jj:
+                            continue
+                        PTest[kk,ii] = PTest[kk,ii] + PTest[kk,jj]
+                        PTest[kk,jj] = 0
+                    PTest[ii,jj] = 0
+                    
+            PTest = normP(PTest, Pcut= 0.001)
+                    
+            pv, PBs, PbT = getPVSampledSeqsPOMM(S, PTest, osIn, nSample = nSample, nProc=nProc)
+            print('     Pb sampled range=(',round(PBs.min(),3),round(PBs.max(),3),') seq Pb=', round(PbT,3))
+
+            S, P = removeUnreachableStates(S,PTest)  
+            SnumVis = [nn for nn in SnumVisTest if nn > 0]
+                
             if fnSave != '':
                 saveNGramPOMMSearchRes(S,P,ng,pv,PbT,SnumVis,fnSave)
+
+        # final model.     
+        pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nSample=nSample, nProc=nProc)
+        if pv > pValue:
+            print(f'pv={pv:.4f} cleared threshold {pValue}. Accepted. mergeClusterDistThreshod: {mergeClusterDistThreshod:.4f}\n')
+            break
+        else:
+            print(f'pv={pv:.4f} did not clear threshold {pValue}. Rejected.\n')
+            
+    print(f'Found model S={S}')
+    print(f'pv={pv:.4f}') 
     
-    # test deleting state through grids.
-    print('Further simplification with state deletion method...') 
-    if fnSave != '':
-        fnSave += '.DeleteState.dat'
-    S, P, pv, PBs, PbT, Pc = MinPOMMSimpDeleteStates(S,osIn, nProc = nProc, nRerun = nRerun, pValue=pValue, nSample=nSample, fnSave=fnSave)
-                    
-    # final model. 
-    print('Found model S=',S)
-    print('pv=',pv) 
-    print('Pb=',PbT,' Pc=',Pc)
-    
-    return S, P, pv, PBs, PbT, Pc
+    return S, P, pv, PBs, PbT
     
 # save NGramPOMMSearch intermediate results to file. 
 def saveNGramPOMMSearchRes(S,P,ng,pv,PbT,SnumVis,fnSave):
@@ -2326,6 +2314,64 @@ def getUniqueSequences(osIn):
     symU = symU.astype(int) 
     return osU,osK,symU 
     
+def getUniqueSequencesByStartSymbol(osIn, ng):
+    """
+    Find all unique symbols in osIn.
+    For each symbol sm, find unique subsequences that start with sm
+    and have maximum length ng.
+
+    Parameters
+    ----------
+    osIn : list
+        List of sequences. Each sequence can be a list or numpy array of ints.
+    ng : int
+        Maximum subsequence length.
+
+    Returns
+    -------
+    seqDict : dict
+        Dictionary keyed by symbol.
+        For each symbol sm:
+            seqDict[sm]['osU'] = list of unique subsequences (lists)
+            seqDict[sm]['osK'] = counts of those subsequences
+    symU : numpy array
+        Sorted unique symbols in osIn.
+    """
+
+    # collect all unique symbols
+    symU = set()
+    for ss in osIn:
+        if len(ss) > 0:
+            symU.update(int(x) for x in ss)
+    symU = sorted(symU)    
+
+    # initialize dictionary
+    seqDict = {}
+    for sm in symU:
+        seqDict[sm] = []
+        
+    # collect unique subsequences by starting symbol
+    for ss in osIn:
+        L = len(ss)
+
+        for i in range(L):
+            sm = int(ss[i])
+            if sm == -1:
+                break
+
+            # subsequence starting at i, truncated to max length ng
+            j = i + ng
+            if j > L:
+                j = L
+                sub = list(ss[i:L])+[-1]
+            else:
+                sub = list(ss[i:j])            
+            if sub not in seqDict[sm]:
+                seqDict[sm].append(sub)
+
+    return seqDict, symU
+        
+    
 # get the confidence intervals of the probabilities of unique sequences
 # Input
 #   osK - counts of the occurances of unique sequences
@@ -2381,7 +2427,7 @@ def BWPOMMCFun(Params):
                  P.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), \
                  ctypes.c_double(pTol), ctypes.c_long(maxIter), ctypes.c_long(randSeed))
     t2 = time.time()
-    print('     BWPOMMC used ',t2-t1,'sec')
+    print(f'     BWPOMMC used {t2-t1:.4f} sec')
     
     #ml2 = computeLogLike(S,P,osU,osK)
     #print('ml C=',ml)
@@ -2459,12 +2505,13 @@ def BWPOMMCFunMultiThread(osU, osK, S, P, pTol, maxIter, numThreads):
 #   nRerun, number of times the algorithm is run. 
 #   nProc, number of processors used. 
 # Returns:
+#   return P, mlMax, Pc, mlSigma, ML   
 #   P, computed transition matrix
 #   MLmax, maximum log likelihood
 #   Pc, sequence completeness of the input sequences on the model
 #   stdML, standard deviation of the maximum likelihood achieved for all runs. 
 #   MK, list of maximum likelihoods
-def BWPOMMCParallel(S,osInO,C=[],maxSteps=5000,pTol=1e-6, nRerun=BWRerun, nProc = nProc):
+def BWPOMMCParallel(S, osInO, C=[], Pcut=0.0, maxSteps=5000,pTol=1e-6, nRerun=BWRerun, nProc = nProc):
     osIn = osInO.copy()
     N = len(S)
     S = array(S)
@@ -2475,7 +2522,8 @@ def BWPOMMCParallel(S,osInO,C=[],maxSteps=5000,pTol=1e-6, nRerun=BWRerun, nProc 
         if len(C) == 0:
             P = normP(rand(N,N))
         else:
-            P = normP(rand(N,N) * C)    
+            P = normP(rand(N,N) * C, Pcut=Pcut)  
+                          
         Ps.append([osU,osK,S,P,pTol,maxSteps])
 
     # parallel conputation of multiple runs. 
@@ -2517,19 +2565,32 @@ def computeLogLike(S,P,osU,osK):
         llk += log(A[1,T-1]+1e-100) * osK[kk]
     return llk
                         
-# normalize the transition matrix. Enforce the fact that the first row is the start state, and the second row is the end state. 
-def normP(P):
+# normalize the transition matrix. Enforce the fact that the first row is the start state, and the second row is the end state.
+def normP(P, Pcut=0.0):
     N = P.shape[0]
     for i in range(N):
-        if i==1:
+        if i == 1:
             continue
-        elif i==0:
-            P[i,1] = 0  # no transition to the end state from the start state.  
-        P[i,0] = 0  # no transitions to the start state. 
-        ss = sum(P[i,:])
+        elif i == 0:
+            P[i, 1] = 0  # no transition to the end state from the start state
+
+        P[i, 0] = 0      # no transitions to the start state
+
+        # hard threshold small entries
+        P[i, P[i, :] < Pcut] = 0
+
+        ss = P[i, :].sum()
         if ss > 0:
-            P[i,    :] /= ss
-    return P        
+            P[i, :] /= ss
+
+            # threshold again after normalization, since renormalization
+            # can leave tiny entries below Pcut
+            P[i, P[i, :] < Pcut] = 0
+            ss = P[i, :].sum()
+            if ss > 0:
+                P[i, :] /= ss
+
+    return P 
 
 # given the state transition matrix, generate the observed seqeunces.
 # Assumptionm, S[0], S[1] are the start and the end states. 
@@ -2635,11 +2696,27 @@ def computeSequenceProb(ss, S, P):
     for t in range(1,T):
         iid = where(S == os[t])[0]      # these are the states of allowed transitions. 
         for jj in iid:
-            for k in range(N):
-                A[jj,t] += P[k,jj] * A[k,t-1]
+            A[jj, t] = dot(A[:, t-1], P[:, jj])
     pS = A[1,T-1]                       # this the probability of observing this unique sequence
     return pS       
 
+# compute the probability of the sequence given the model, the sub does not need match the ending. 
+def computeSequenceProbNoEnd(ss, S, P):
+    S = array(S)
+    N = len(S)
+
+    ss = array(ss)
+    os = [0] + list(ss)
+    T = len(os)             # number of steps. 
+    # compute alphas
+    A = zeros((N,T))
+    A[0,0] = 1.0
+    for t in range(1,T):
+        iid = where(S == os[t])[0]      # these are the states of allowed transitions. 
+        for jj in iid:
+            A[jj, t] = dot(A[:, t-1], P[:, jj])
+    pS = sum(A[:,T-1])                       # this the probability of observing this unique sequence
+    return pS       
                         
 # This function returns the number of transition sampled with transition probability P.
 # The total number of sampling is N.                
@@ -2781,31 +2858,28 @@ def CreatePOMMFanout(nSyms,nExtra,nFanOut):
     #plotTransitionDiagram(S,P)
     return S, P
 
-    
 # remove states that are unreachiable from the start state. Keep the transitions to the end states.     
-def removeUnreachableStates(SIn,P):
-    #print('Finding and removing unreachable states...')
-    epsilon = 1e-10 # small number for judging to be zero. 
-    v = zeros(len(SIn))
-    v[0] = 1
-    iid0 = [0]
-    iid = [0]
-    while 1:
-        v= matmul(v,P)
-        iid2 = where(v > epsilon)[0]
-        iid = list(unique(iid + list(iid2)))
-        v = zeros(len(SIn))
-        v[iid] = 1
-        if iid == iid0: # reached the end state. 
-            break
-        iid0 = iid
+def removeUnreachableStates(SIn, P, epsilon=1e-10):
+    N0 = len(SIn)
+    reachable = set([0])
+    frontier = set([0])
+
+    while frontier:
+        new_frontier = set()
+        for i in frontier:
+            js = where(P[i, :] > epsilon)[0]
+            for j in js:
+                if j not in reachable:
+                    new_frontier.add(j)
+        reachable |= new_frontier
+        frontier = new_frontier
+
+    iid = sorted(reachable)
     S = [SIn[ii] for ii in iid]
-    N = len(S)
-    P2 = zeros((N,N))
-    for i in range(N):
-        for j in range(N):
-            P2[i,j] = P[iid[i],iid[j]]
-    return S,P2
+    P2 = P[ix_(iid, iid)].copy()
+
+    return S, P2
+    
     
 # detete connections with small transition probabilities.   
 def deleteTransitionSmallProb(SIn,PIn,Pcut = 0.001, iRemoveUnreachableState = 1):
@@ -2892,7 +2966,10 @@ def plotTransitionDiagram(S,P0,Pcut=0.01,filenameDot='temp.dot',filenamePDF='tem
     fp.write('size="8,8";\n');
     fp.write('rankdir=LR;\n')
     fp.write('ranksep=0.8; \n')
-    S,P = deleteTransitionSmallProb(S,P0,Pcut = Pcut)
+    if Pcut > 0:
+        S,P = deleteTransitionSmallProb(S,P0,Pcut = Pcut)
+    else:
+        P = P0  
     N = len(S)
     
     # find duplicate states
@@ -3101,10 +3178,11 @@ def MergeStates(S,P,mergeInds):
 #   S - state vector
 #   P - transitinn probabilities
 #   mergeInds - list of pair of indices (ii,jj), merging state ii to state jj. 
+#   osT - observed sequences. 
 # Return:
 #   P2 - transition matrix. 
-def MergeStatesRecalculateP(S,P,mergeInds,osT,maxIterBW=1000,nRerunBW=100,nProc=2):
-    P = normP(P)
+def MergeStatesRecalculateP(S,P,mergeInds,osT,maxIterBW=1000,nRerunBW=100,nProc=2, Pcut=0.0):
+    P = normP(P, Pcut=Pcut)
     P2 = P.copy()
     for (ii,jj) in mergeInds:
         print('Merging state ',ii,' to ',jj)
@@ -3115,9 +3193,9 @@ def MergeStatesRecalculateP(S,P,mergeInds,osT,maxIterBW=1000,nRerunBW=100,nProc=
         # disconnect state ii
         P2[:,ii] = 0
         P2[ii,:] = 0
-    P2 = normP(P2)
+    P2 = normP(P2, Pcut=Pcut)
     C = zeros(P2.shape)
-    C[where(P2 > 0.001)] = 1    # only allow connections with P > 0.001
+    C[where(P2 > Pcut)] = 1    # only allow connections with P > 0.001
     print('Recalculating the transition probabilities...')
     P2, ml, Pc, stdml, ML = BWPOMMCParallel(S,osT,C=C,maxSteps=maxIterBW,nProc=nProc,nRerun=nRerunBW)
     return P2
