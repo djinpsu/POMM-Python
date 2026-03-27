@@ -8,6 +8,7 @@ import pickle
 import os
 import POMM
 import matplotlib
+import numpy as np
 matplotlib.rcParams['font.family'] = 'Times'
 
 nProc = 2
@@ -17,21 +18,22 @@ maxIterBW = 1000			# maximum iterations in BW algorithm
 nRerunBW = 100				# number of re-runs of BW algorithm
 nSample = 10000				# number of samples drawn from POMM for computing Pc distribution
 pValue = 0.05               # pValue for inferring POMM. 
+Pcut=1e-4
 
 # set random number generator seed
 random.seed(datetime.now().timestamp())	
 
 def main():
 
-    dataDir = '.'
-    fn = '150mA_u_left_tl.annot_observed_sequences.txt'
+    dataDir = 'JoeBengaleseFinchCoolingData'
+    fn = '0mA_annot_observed_sequences.txt'
+    #fn = '150mA_u_left_tl.annot_observed_sequences.txt'
     seqs, syllableLabels = getSequences(f'{dataDir}/{fn}')
-    
     
     if 1: # learn POMM from sequences
 
         filenameSave = f'{dataDir}/{fn}.POMM.dat'
-        learnPOMM(seqs, syllableLabels, filenameSave)
+        learnPOMM(seqs, syllableLabels, filenameSave, stateMergeParam=[1.0,0.1,0.1], Pcut=Pcut)
 
     if 1: # load the learned POMM and plot
 
@@ -43,29 +45,21 @@ def main():
         for ss in S[2:]:
             S2.append(Syms2[ss]) 
             
-        print(f'S2: {S2} pv: {pv: .4f}')
 
         fnFig = f'{filenameSave}.pdf'
         print(f'Saving transition diagram to {fnFig}')
         plotTransitionDiagram(S2,P,Pcut=0.01,filenamePDF=fnFig, \
-                removeUnreachable=False,markedStates=[])    
+                removeUnreachable=False,markedStates=[])                    
+        os.system(f'open {fnFig}')
             
 
-def learnPOMM(seqs, syllableLabels,  filenameSave):
+def learnPOMM(seqs, syllableLabels, filenameSave, stateMergeParam=[0.25,0.01,0.01], Pcut=0.001):
 
     osIn, repeatNumSeqs, Syms, Syms2 = getNumericalSequencesNonRepeat(seqs, syllableLabels)
 
-    
     print('print inferring POMM using the N-gram method ...')
-    S, P, pv, PBs, PbT, Pc = NGramPOMMSearch(osIn,nRerun=nRerunBW,pValue=pValue,nProc=nProc,nSample =nSample)
-
-    savePOMM(filenameSave, S, P, pv, PBs, PbT, osIn, Syms, Syms2)
-
-    # simplify by cutting connections     
-    print('Simplifying the connections...')  
-    S, P, pv, PBs, PbT  = MinPOMMSimp(S,osIn, minP = 0.01,nProc=nProc,nRerun=nRerunBW,pValue=pValue, nSample=nSample, factors=[0.5])    
-    print('After simplification pv=',pv)
-                                                    
+    S, P, pv, PBs, PbT = NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=stateMergeParam, Pcut=Pcut, nProc=nProc,nSample =nSample)
+                                                        
     savePOMM(filenameSave, S, P, pv, PBs, PbT, osIn, Syms, Syms2)
 
 def savePOMM(filenameSave, S, P, pv, PBs, PbT, osIn, Syms, Syms2):
@@ -92,7 +86,7 @@ def getSequences(filename):
     dat = dat.strip()
     
     seqs = dat.split('\n')    
-    syllableLabels = list(set("".join(seqs)))
+    syllableLabels = list(sorted(set("".join(seqs))))
     print(f'syllableLabels: {syllableLabels} numSeqs: {len(seqs)}\n') 
     return seqs, syllableLabels
 
