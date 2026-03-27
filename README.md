@@ -8,7 +8,38 @@ some symbols must be represented by multiple states.
 This many-to-one mapping from states to symbols is characteristic of POMMs. 
 The goal of the code is to determine the minimum number of states required for each symbol.
 
-Major update: 3/27/2026. A more robust method of inferring POMM is introduced. 
+Major update: 3/27/2026. A more robust method of inferring POMM is introduced. The new method is
+    NGramPOMMSearch
+   
+        Default POMM inferenece method
+   
+        Construct POMM using n-gram model.
+        Successively build n-gram transition models, and test for Pbeta significance.
+        Then merge states. 
+   
+        S, P, pv, PBs, PbT = NGramPOMMSearch(osIn, pValue=0.05, Pcut=0.001, stateMergeParam=[1, 0.1, 0.1], nProc=2, nSample = 10000, ngramStart = 1, fnSave=''):
+
+        Inputs: 
+        
+        osIn    - list of observed sequences. Symbols must be 1,2,...,n, where n is the number of symbols. 
+        nProc   - number of processes used for BW
+        pValue  - p-value for accepting the POMM using Pc. 
+        nSample - number of samples for calculating pValue. 
+        ngramStart - starting ngram, 1, MARKOV, 2, second oreder Markov, etc.
+        Pcut - ignore transition probabilities below this value
+        stateMergeParam - [maxV, minV, step], state merging parameter, max, min, and step stize. 
+                                        Values tested from maxV to minV decreasing with stepSize. Stops for the fist pv > pValue. 
+                                        The parameter ranges from 1 to 0. As it decreases, the model becomes more complex.
+                                        Adjust maxV, minV, step for your sequences. 
+
+        Return: 
+        
+        S - the final state
+        P - the final transition prob
+        pv - p-value of the observed seqeunce
+        PBs - PBs sampled from the final model
+        PbT - Pb of the observed sequences on the final model
+
 
 To run the code, first compile the C library:
 
