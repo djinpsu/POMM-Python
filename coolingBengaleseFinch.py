@@ -25,19 +25,18 @@ random.seed(datetime.now().timestamp())
 
 def main():
 
-    dataDir = 'JoeBengaleseFinchCoolingData'
     fn = '0mA_annot_observed_sequences.txt'
     #fn = '150mA_u_left_tl.annot_observed_sequences.txt'
-    seqs, syllableLabels = getSequences(f'{dataDir}/{fn}')
+    seqs, syllableLabels = getSequences(fn)
     
     if 1: # learn POMM from sequences
 
-        filenameSave = f'{dataDir}/{fn}.POMM.dat'
+        filenameSave = f'{fn}.POMM.dat'
         learnPOMM(seqs, syllableLabels, filenameSave, stateMergeParam=[1.0,0.1,0.1], Pcut=Pcut)
 
     if 1: # load the learned POMM and plot
 
-        filenameSave = f'{dataDir}/{fn}.POMM.dat'
+        filenameSave = f'{fn}.POMM.dat'
         
         S, P, pv, PBs, PbT, osIn, Syms, Syms2 = loadPOMM(filenameSave)            
 
