@@ -178,122 +178,171 @@ void GetUniqueSequences(int nSeq, int *osIn, int *nSeqU, int *osU, int *nUnique,
 	(*nSeqU) = nSU;
 }
 
-double BWPOMMC(int nSeq, int *osIn, int nU, int *osK, int N, int *stateSyms, double *P, double pTol, int maxIter, int randSeed)
+//2026-3-26, fixed the problem. if P(i,j) = 0, it will remain 0. 
+double BWPOMMC(int nSeq, int *osIn, int nU, int *osK, int N, int *stateSyms,
+               double *P, double pTol, int maxIter, int randSeed)
 {
-	int i, j, iid, maxSL, sl, lb, istep, kk, ik, T, t, iU;
-	double A0,mmax;
-	double *logA, *logB, *PO, *x;
-	int *os;
-	double llk = 0.0;	//log-likelihood of the seqeunces. 
-	double minP = 1e-10;	//minimum transition probability. 
+    int i, j, iid, maxSL, sl, lb, istep, kk, ik, T, t, iU;
+    double A0, mmax;
+    double *logA, *logB, *PO, *x;
+    int *os;
+    int *allowed;
+    double llk = 0.0;
 
-	//set initial transition probabilities. 
-	if (randSeed != -1) {
-		//srand(time(NULL));
-		srand((unsigned int)randSeed);	
-	}	
-	
-	//normalize the transition probability. Enforce the properties of the start and end states.
-	norm(N,P);
-		
-	//get the maximum sequence length. 
-	maxSL = getMaxSeqLen(nSeq,osIn);
-	
-	//allocate memory. 
-	logA = (double *) malloc(maxSL * N * sizeof(double));
-	logB = (double *) malloc(maxSL * N * sizeof(double));
-	PO = (double *) malloc(N * N * sizeof(double));
-	os = (int *) malloc(maxSL * sizeof(int));
-	if (maxSL > N) {
-		x = (double *) malloc(maxSL * sizeof(double));
-	} else {
-		x = (double *) malloc(N * sizeof(double));
-	}			
-	
-	for (istep=0; istep < maxIter; istep++) {
-		zeros(N,N,PO);
-		kk = 0;
-		T = 0;
-		iU = 0;
-		llk = 0.0;
-		while (kk < nSeq) {
-			for (ik=kk; ik<nSeq; ik++) { // unpack the unique seqeunces in osIn
-				lb = osIn[ik];
-				if (lb == 0) {	// start sequence. 
-					os[0] = 0;
-					T = 1;
-				} else if (lb == -1) {// end sequence
-					os[T++] = -1;
-					break;
-				} else {
-					os[T++] = lb;
-				}
-			}
-			if (lb != -1) break;	// sequence did not end with -1. 
-			kk += T;
-			
-			//compute alphas
-			logZeros(N,T,logA);
-			logA[0] = 0.0;
-			for (t=1; t<T; t++) {
-				for (i=0; i<N; i++) { //log sum 
-					if (stateSyms[i] == os[t]) {//allowed transition, destination.  
-						for (j=0; j < N; j++) {
-							x[j] = logA[getIndex2(j,t-1,N,T)] + log(P[getIndex(j,i,N)] + minP);
-						}
-						logA[getIndex2(i,t,N,T)] = logsumexp(x, N);	
-					}
-				}
-			}
-			
-			// compute betas
-			logZeros(N,T,logB);
-			logB[getIndex2(1,T-1,N,T)] = 0.0; 
-			for (t=T-2; t>-1; t--) {
-				for (i=0; i<N; i++) {
-					if (stateSyms[i] == os[t]) {//allowed from transition, source.  
-						for (j=0; j < N; j++) {
-							x[j] = log(P[getIndex(i,j,N)] + minP) + logB[getIndex2(j,t+1,N,T)];
-						}
-						logB[getIndex2(i,t,N,T)] = logsumexp(x, N);	
-					}
-				}
-			}
-					
-			// update transition probabilities. 
-			A0 = exp(logA[getIndex2(1,T-1,N,T)]); 
-			if ( A0 == 0) continue; //no update due to the denominator being zero. 
-			for (i=0; i<N; i++) {
-				for (j=0; j<N; j++) {					
-					for (t=0; t<T-1; t++) {
-						x[t] = logA[getIndex2(i,t,N,T)] + logB[getIndex2(j,t+1,N,T)] +  log(P[getIndex(i,j,N)] + minP);
-					}
-					PO[getIndex(i,j,N)] += osK[iU] * exp(logsumexp(x,T-1))/A0;
-				}
-			}
+    if (randSeed != -1) {
+        srand((unsigned int)randSeed);
+    }
 
-			llk += logA[getIndex2(1,T-1,N,T)] * osK[iU] ;	//add to log-likelihood. 
-			
-			iU++;
-		}
-		// compute the new transition probability.
-		norm(N,PO);
+    /* Structural mask: transitions initially > 0 are allowed forever.
+       Initial zeros remain forbidden forever. */
+    allowed = (int *) malloc(N * N * sizeof(int));
+    for (i = 0; i < N * N; i++) {
+        allowed[i] = (P[i] > 0.0) ? 1 : 0;
+    }
 
-		mmax = 0.0;
-		for (i=0; i< N*N; i++) {
-			if (fabs(PO[i] - P[i]) > mmax) mmax = fabs(PO[i] - P[i]);
-		} 
-		if (mmax < pTol) break;
-		for (i=0; i< N*N; i++) P[i] = PO[i];
-		
-	}	
-	free(logA);
-	free(logB);	
-	free(PO);
-	free(os);
-	free(x);
-	
-	return llk;
+    /* Normalize initial P while preserving constraints. */
+    for (i = 0; i < N * N; i++) {
+        if (!allowed[i]) P[i] = 0.0;
+    }
+    norm(N, P);
+    for (i = 0; i < N * N; i++) {
+        if (!allowed[i]) P[i] = 0.0;
+    }
+
+    maxSL = getMaxSeqLen(nSeq, osIn);
+
+    logA = (double *) malloc(maxSL * N * sizeof(double));
+    logB = (double *) malloc(maxSL * N * sizeof(double));
+    PO   = (double *) malloc(N * N * sizeof(double));
+    os   = (int *) malloc(maxSL * sizeof(int));
+    if (maxSL > N) x = (double *) malloc(maxSL * sizeof(double));
+    else           x = (double *) malloc(N * sizeof(double));
+
+    for (istep = 0; istep < maxIter; istep++) {
+        zeros(N, N, PO);
+        kk = 0;
+        T = 0;
+        iU = 0;
+        llk = 0.0;
+
+        while (kk < nSeq) {
+            for (ik = kk; ik < nSeq; ik++) {
+                lb = osIn[ik];
+                if (lb == 0) {
+                    os[0] = 0;
+                    T = 1;
+                } else if (lb == -1) {
+                    os[T++] = -1;
+                    break;
+                } else {
+                    os[T++] = lb;
+                }
+            }
+            if (lb != -1) break;
+            kk += T;
+
+            /* Forward */
+            logZeros(N, T, logA);
+            logA[0] = 0.0;   /* state 0 at t=0 */
+
+            for (t = 1; t < T; t++) {
+                for (i = 0; i < N; i++) {
+                    if (stateSyms[i] == os[t]) {
+                        for (j = 0; j < N; j++) {
+                            iid = getIndex(j, i, N);
+                            if (allowed[iid] && P[iid] > 0.0) {
+                                x[j] = logA[getIndex2(j, t - 1, N, T)] + log(P[iid]);
+                            } else {
+                                x[j] = -INFINITY;
+                            }
+                        }
+                        logA[getIndex2(i, t, N, T)] = logsumexp(x, N);
+                    }
+                }
+            }
+
+            /* Backward */
+            logZeros(N, T, logB);
+            logB[getIndex2(1, T - 1, N, T)] = 0.0;   /* end state at final time */
+
+            for (t = T - 2; t > -1; t--) {
+                for (i = 0; i < N; i++) {
+                    if (stateSyms[i] == os[t]) {
+                        for (j = 0; j < N; j++) {
+                            iid = getIndex(i, j, N);
+                            if (allowed[iid] && P[iid] > 0.0) {
+                                x[j] = log(P[iid]) + logB[getIndex2(j, t + 1, N, T)];
+                            } else {
+                                x[j] = -INFINITY;
+                            }
+                        }
+                        logB[getIndex2(i, t, N, T)] = logsumexp(x, N);
+                    }
+                }
+            }
+
+            /* Sequence likelihood */
+            A0 = exp(logA[getIndex2(1, T - 1, N, T)]);
+            if (A0 == 0.0) {
+                iU++;
+                continue;
+            }
+
+            /* Expected transition counts */
+            for (i = 0; i < N; i++) {
+                for (j = 0; j < N; j++) {
+                    iid = getIndex(i, j, N);
+
+                    if (!allowed[iid] || P[iid] <= 0.0) {
+                        continue;
+                    }
+
+                    for (t = 0; t < T - 1; t++) {
+                        x[t] = logA[getIndex2(i, t, N, T)]
+                             + log(P[iid])
+                             + logB[getIndex2(j, t + 1, N, T)];
+                    }
+
+                    PO[iid] += osK[iU] * exp(logsumexp(x, T - 1)) / A0;
+                }
+            }
+
+            llk += logA[getIndex2(1, T - 1, N, T)] * osK[iU];
+            iU++;
+        }
+
+        /* Enforce forbidden edges before normalization */
+        for (i = 0; i < N * N; i++) {
+            if (!allowed[i]) PO[i] = 0.0;
+        }
+
+        norm(N, PO);
+
+        /* Enforce mask again after normalization */
+        for (i = 0; i < N * N; i++) {
+            if (!allowed[i]) PO[i] = 0.0;
+        }
+
+        mmax = 0.0;
+        for (i = 0; i < N * N; i++) {
+            if (fabs(PO[i] - P[i]) > mmax) mmax = fabs(PO[i] - P[i]);
+        }
+
+        for (i = 0; i < N * N; i++) {
+            P[i] = PO[i];
+        }
+
+        if (mmax < pTol) break;
+    }
+
+    free(logA);
+    free(logB);
+    free(PO);
+    free(os);
+    free(x);
+    free(allowed);
+
+    return llk;
 }
 
 
@@ -1174,94 +1223,105 @@ int sampleAliasMethod(AliasTableEntry *aliasTable, int N) {
 }
 //END Alias method.  
 
-//sample the sequences for the POMM and compute Pb. 
-void getModifiedSequenceCompletenessSamplingModelC(int nSeqs, int N, int *S, double *P, int nSample, double *PBs, double beta, int randSeed)
+void getModifiedSequenceCompletenessSamplingModelC(int nSeqs, int N, int *S, double *P,
+                                                   int nSample, double *PBs, double beta, int randSeed)
 {
-	//set initial transition probabilities. 
-	if (randSeed != -1) {
-		srand(time(NULL));
-		srand((unsigned int)randSeed);	
-	} else {
-		srand(time(NULL));
-	}			
-	
-	//printf("\nIn C getModifiedSequenceCompletenessSamplingModelC  \n");
-	//PrintTransitionMatrix(N,P);
-	//for (int i=0; i<N; i++) {
-	//	printf("%6.2f ",P[getIndex(0,i,N)]);
-	//}
-	//printf("\n");
-	
-	//get unique sequences of the model. 
-	double *seqP, *pU;
-	int nU;
-	
-	seqP = getUniqueSeqProbsPOMM(N, S, P);
-	nU = (int) seqP[0];
-	pU = (double *) malloc(nU * sizeof(double));
-	for (int i = 0; i<nU; i++) pU[i] = seqP[i+1];
-	free(seqP);
+    if (randSeed != -1) {
+        srand((unsigned int)randSeed);
+    } else {
+        srand((unsigned int)time(NULL));
+    }
 
-	int *selIDs, *KIDs;
-	selIDs = (int *) malloc(nU * sizeof(int));
-	KIDs = (int *) malloc(nU * sizeof(int));
-	
-	printf("	Found nU=%d unique sequences\n",nU);
-	
-	AliasTableEntry *aliasTable;
-	aliasTable = (AliasTableEntry *) malloc(nU * sizeof(AliasTableEntry));
+    if (nSeqs <= 0 || nSample <= 0) {
+        return;
+    }
+
+    double *seqP, *pU;
+    int nU;
+
+    seqP = getUniqueSeqProbsPOMM(N, S, P);
+    nU = (int)seqP[0];
+
+    if (nU <= 0) {
+        free(seqP);
+        return;
+    }
+
+    pU = (double *)malloc(nU * sizeof(double));
+    int *selIDs = (int *)malloc(nU * sizeof(int));
+    int *KIDs   = (int *)malloc(nU * sizeof(int));
+    AliasTableEntry *aliasTable = (AliasTableEntry *)malloc(nU * sizeof(AliasTableEntry));
+
+    if (!pU || !selIDs || !KIDs || !aliasTable) {
+        free(seqP);
+        free(pU);
+        free(selIDs);
+        free(KIDs);
+        free(aliasTable);
+        return;
+    }
+
+    for (int i = 0; i < nU; i++) {
+        pU[i] = seqP[i + 1];
+    }
+    free(seqP);
+
+    printf("    Found nU=%d unique sequences\n", nU);
+
     initializeAliasTable(pU, nU, aliasTable);
-		
-	for (int isam=0; isam<nSample; isam++) {
-	
-		int nSel = 0;
-		for (int iseq=0; iseq<nSeqs; iseq++) {
-			
-			int k = sampleAliasMethod(aliasTable, nU);	//Alias method, faster when sampling many times. 			
-			//int k = selectSeq(pU, nU);	//select a unique sequences. slower method. 
-			
-			//check if this already sampled. 
-			int flag = 0, mk = -1;
-			for (int j=0; j<nSel; j++) {
-				if (selIDs[j] == k) {
-					flag = 1;
-					mk = j;
-					break;
-				}
-			}
-			if (flag == 0) {//new unique sequence. 
-				selIDs[nSel] = k;
-				KIDs[nSel] = 1;
-				nSel += 1;
-			} else {
-				KIDs[mk] += 1;
-			}
-		}	
-		
-		double Pc = 0.0;	// sequence completeness
-		for (int i=0; i<nSel; i++) {
-			Pc += pU[selIDs[i]];
-		}
-				
-		double dd = 0.0;
-		for (int i=0; i<nSel; i++) {
-			double ps = KIDs[i]*1.0/nSeqs;
-			double pm = pU[selIDs[i]]/Pc;
-			dd += 0.5 * fabs(ps - pm);
-		}
-		
-		double Pb = (1-beta)*Pc + beta*(1-dd);
-		PBs[isam] = Pb;
-		
-		//printf("Pc=%f Pb=%f\n",Pc,Pb);
-		
-	}
-	
-	free(pU);	
-	free(selIDs); 
-	free(KIDs);
-	free(aliasTable);
+
+    for (int isam = 0; isam < nSample; isam++) {
+        for (int i = 0; i < nU; i++) {
+            selIDs[i] = -1;
+            KIDs[i] = 0;
+        }
+
+        int nSel = 0;
+
+        for (int iseq = 0; iseq < nSeqs; iseq++) {
+            int k = sampleAliasMethod(aliasTable, nU);
+
+            int flag = 0, mk = -1;
+            for (int j = 0; j < nSel; j++) {
+                if (selIDs[j] == k) {
+                    flag = 1;
+                    mk = j;
+                    break;
+                }
+            }
+
+            if (flag == 0) {
+                selIDs[nSel] = k;
+                KIDs[nSel] = 1;
+                nSel += 1;
+            } else {
+                KIDs[mk] += 1;
+            }
+        }
+
+        double Pc = 0.0;
+        for (int i = 0; i < nSel; i++) {
+            Pc += pU[selIDs[i]];
+        }
+
+        double dd = 0.0;
+        if (Pc > 0.0) {
+            for (int i = 0; i < nSel; i++) {
+                double ps = (double)KIDs[i] / nSeqs;
+                double pm = pU[selIDs[i]] / Pc;
+                dd += 0.5 * fabs(ps - pm);
+            }
+        }
+
+        PBs[isam] = (1.0 - beta) * Pc + beta * (1.0 - dd);
+    }
+
+    free(pU);
+    free(selIDs);
+    free(KIDs);
+    free(aliasTable);
 }
+
 
 // useful data structures and functionns used in constructNGramPOMMC
 typedef struct {
