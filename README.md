@@ -8,6 +8,8 @@ some symbols must be represented by multiple states.
 This many-to-one mapping from states to symbols is characteristic of POMMs. 
 The goal of the code is to determine the minimum number of states required for each symbol.
 
+Major update: 3/27/2026. A more robust method of inferring POMM is introduced. 
+
 To run the code, first compile the C library:
 
      make
@@ -18,9 +20,15 @@ The state transition diagrams are plotted with GraphViz. Make sure to install it
 
 Then run 
 
-     python ToyModels.py
+     python coolingBengaleseFinch.py
 
-Toy models were used to illustrate the method in Lu et al. (J Neurosci, 2025). These should provide a helpful starting point for analyzing your own data.
+This code can be modified for your own data. 
+
+Toy models were used to illustrate the method in Lu et al. (J Neurosci, 2025). To run the toy model, do
+
+     python ToyModels.py 
+
+Note that the POMM inference method is updated on 3/27/2026. The results are bit different from those in the paper. 
 
 Useful concepts:
 
