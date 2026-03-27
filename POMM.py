@@ -102,12 +102,6 @@ pTolence = 1e-5                 # smallest transition probability.
    
         S, P, pv, PBs, PbT = NGramPOMMSearch(osIn, pValue=0.05, Pcut=0.001, stateMergeParam=[1, 0.1, 0.1], nProc=2, nSample = 10000, ngramStart = 1, fnSave=''):
 
-        NGramPOMMSearch(osIn, nRerun = 100, pValue=0.05, nProc=2,nSample = 10000, ngramStart = 1)
-
-        Construct POMM using n-gram model.
-        Successively build n-gram transition models, and test for Pbeta significance.
-        Then merge states. Then delete states. 
-
         Inputs: 
         
         osIn    - list of observed sequences. Symbols must be 1,2,...,n, where n is the number of symbols. 
