@@ -1499,22 +1499,89 @@ def NGramPOMMSearch(osIn, pValue=0.05, stateMergeParam=[1, 0.1, 0.1], Pcut=0.001
             PTest = normP(PTest, Pcut= 0.001)
                     
             pv, PBs, PbT = getPVSampledSeqsPOMM(S, PTest, osIn, nSample = nSample, nProc=nProc)
-            print('     Pb sampled range=(',round(PBs.min(),3),round(PBs.max(),3),') seq Pb=', round(PbT,3))
+            print(f'     pv=',pv,' Pb sampled range=(',round(PBs.min(),3),round(PBs.max(),3),') seq Pb=', round(PbT,3))
 
             S, P = removeUnreachableStates(S,PTest)  
             SnumVis = [nn for nn in SnumVisTest if nn > 0]
                 
             if fnSave != '':
                 saveNGramPOMMSearchRes(S,P,ng,pv,PbT,SnumVis,fnSave)
+                
+    # merge states if the daughter states of one contained in the daughter states of the other. 
 
-        # final model.     
-        pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nSample=nSample, nProc=nProc)
-        if pv > pValue:
-            print(f'pv={pv:.4f} cleared threshold {pValue}. Accepted. mergeClusterDistThreshod: {mergeClusterDistThreshod:.4f}\n')
-            break
-        else:
-            print(f'pv={pv:.4f} did not clear threshold {pValue}. Rejected.\n')
+    print('\nMerging states whose daughter states ar subset of the daughter states of the another state with the same symbol. Accept if passes pv test. \n')
+    
+    for sm in symU:
+        
+        N = len(S)
+        iid = where(sm == array(S))[0]
+        
+        if len(iid) <= 1: # if there are one state no need to merge. 
+            continue
             
+        print(' ')  
+        print(' merging states for sym  = ',sm)
+        
+        # build up the list of daughter states. 
+        n_daughters = []
+        S_daughters = []
+        for ii in iid:
+            jjd = set(where(P[ii,:] > 0.001)[0])
+            n_daughters.append(len(jjd))
+            S_daughters.append(jjd)
+        kkd = argsort(n_daughters)[::-1]
+        iid = [iid[k] for k in kkd]
+        n_daughters = [n_daughters[k] for k in kkd]
+        S_daughters = [S_daughters[k] for k in kkd]
+   
+        # go through the pairs
+                
+        for i in range(len(iid)):
+            ii = iid[i]
+            if SnumVis[ii] == 0:    # already merged.
+                continue
+            for j in range(i+1,len(iid)):
+                jj = iid[j]
+                if SnumVis[jj] == 0:    # already merged.
+                    continue
+                if S_daughters[j].issubset(S_daughters[i]):    # jj need to merge to ii. 
+ 
+                    SnumVisTest = SnumVis
+                    PTest = P.copy()
+ 
+                    print(f'    test merging state {jj} to state {ii}')     
+                    for kk in range(N):
+                        if kk == ii or kk == jj:
+                            continue
+                        PTest[ii,kk] = SnumVisTest[ii]*1.0/(SnumVisTest[ii]+SnumVisTest[jj]) * PTest[ii,kk] + \
+                                       SnumVisTest[jj]*1.0/(SnumVisTest[ii]+SnumVisTest[jj]) * PTest[jj,kk]
+                        PTest[jj,kk] = 0
+
+                    SnumVisTest[ii] += SnumVisTest[jj]
+                    SnumVisTest[jj] = 0                    
+                    PTest[jj,1] = 1.0
+                    
+                    for kk in range(N):
+                        if kk == ii or kk == jj:
+                            continue
+                        PTest[kk,ii] = PTest[kk,ii] + PTest[kk,jj]
+                        PTest[kk,jj] = 0
+                    PTest[ii,jj] = 0
+
+                    pv, PBs, PbT = getPVSampledSeqsPOMM(S, PTest, osIn, nSample=nSample, nProc=nProc)
+                    if pv > pValue:
+                        print(f'    pv={pv:.4f} merger accepted.')
+                        P = PTest.copy()
+                        SnumVis = SnumVisTest
+                    else:    
+                        print(f'    pv={pv:.4f} merger rejected.')
+
+        P = normP(P, Pcut= 0.001)
+        S, P, iids = removeUnreachableStates(S,P, returniid=True)  
+        SnumVis = [SnumVis[k] for k in iids]
+                
+    # final model.     
+    pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nSample=nSample, nProc=nProc)
     print(f'Found model S={S}')
     print(f'pv={pv:.4f}') 
     
@@ -2853,7 +2920,7 @@ def CreatePOMMFanout(nSyms,nExtra,nFanOut):
     return S, P
 
 # remove states that are unreachiable from the start state. Keep the transitions to the end states.     
-def removeUnreachableStates(SIn, P, epsilon=1e-10):
+def removeUnreachableStates(SIn, P, epsilon=1e-10, returniid=False):
     N0 = len(SIn)
     reachable = set([0])
     frontier = set([0])
@@ -2872,7 +2939,10 @@ def removeUnreachableStates(SIn, P, epsilon=1e-10):
     S = [SIn[ii] for ii in iid]
     P2 = P[ix_(iid, iid)].copy()
 
-    return S, P2
+    if returniid == False:
+        return S, P2
+    else:
+        return S, P2, iid
     
     
 # detete connections with small transition probabilities.   
