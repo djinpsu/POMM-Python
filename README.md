@@ -11,7 +11,7 @@ The goal of the code is to determine the minimum number of states required for e
 Major update: 3/27/2026. A more robust method of inferring POMM is introduced. The new method is
     NGramPOMMSearch
     
-Majjor update: 4/21/2026. An important bug fixed. Download all files and compile fresh if used the previous version. 
+Major update: 4/21/2026. An important bug fixed. Download all files and compile fresh if used the previous version. 
    
         Default POMM inferenece method
    
