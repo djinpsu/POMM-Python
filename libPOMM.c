@@ -196,9 +196,18 @@ double BWPOMMC(int nSeq, int *osIn, int nU, int *osK, int N, int *stateSyms,
     /* Structural mask: transitions initially > 0 are allowed forever.
        Initial zeros remain forbidden forever. */
     allowed = (int *) malloc(N * N * sizeof(int));
+    if (allowed == NULL) {
+        return -INFINITY;   /* or handle error */
+    }       
     for (i = 0; i < N * N; i++) {
         allowed[i] = (P[i] > 0.0) ? 1 : 0;
     }
+    /* hard structural constraints */
+    allowed[getIndex(0,1,N)] = 0;   /* no start -> end */
+    for (i = 0; i < N; i++) {
+        allowed[getIndex(i,0,N)] = 0;   /* no -> start */
+        allowed[getIndex(1,i,N)] = 0;   /* no outgoing from end */
+    }    
 
     /* Normalize initial P while preserving constraints. */
     for (i = 0; i < N * N; i++) {
@@ -669,7 +678,7 @@ void FindUniqueStateSequencesC(int N, double *P, LinkedList **ends, LinkedList *
 	int flag, istep, flagNoNext;
 	DLinkedList *activeEnds;
 	LinkedList *pp3;
-	printf("In FindUniqueStateSequencesC PSsmall=%lf\n",PSsmall);
+	//printf("In FindUniqueStateSequencesC PSsmall=%lf\n",PSsmall);
 	
 	activeEnds = (DLinkedList *) malloc(sizeof(DLinkedList));
 	activeEnds->pre = NULL;
@@ -1052,97 +1061,75 @@ void freeArrayInt(int *pt)
 }
 
 
-
 //find all unique sequences and probabilities up to a tolerance. 
 //returns number of unique sequences. 
 //pointer seqP will be pointing to the transition probabilities of the unique sequences
 double *getUniqueSeqProbsPOMM(int N, int *S, double *P)
 {
-	double PtotTol = 0.99; 		//if the total probability exceeds this, stop. 
-	double pTol = 1e-10;			//if the probability of the sequence is smaller than this, the sequence is discarded. 
-	double pTransTol = 0.001;	//cut off for transition matrix probability. Below this considered 0.
-	int nU = 0;					//number of unique sequences
-	int memSize = 0;				//memory size of seqP
-	int memSizeInc = 1000;		//size increase of seqP
-	double p, Ptot; 					//probability of the sequence
-	double *seqP;				//seqP[0] is the number of unique sequences.  
-	
-	NodeD *HeadNode, *pos, *pos2, *newNode;		
-	HeadNode = (NodeD *) malloc(sizeof(NodeD));	
-	HeadNode->ii = 0;	//starting at the start state. 
-	HeadNode->P = 0.0;  //log probability of sequence to this point. 
-	HeadNode->parent = NULL;
-	HeadNode->next = NULL; 
+    const double PSsmall = 1e-5;   // same role as old path cutoff
 
-	memSize = memSizeInc;
-	seqP = (double *) malloc(memSizeInc * sizeof(double));	//initial allocation of memory of the unique sequence probabilities. The calling function must destroy the memory after use. 
-	seqP[0] = 0;
+    int Ns = 0;
+    double *Ps = NULL;
+    LinkedList **Seqs = NULL;
 
-	Ptot = 0.0;
-	
-	int nLen=0;
-	
-	while (1) {
-		pos = HeadNode;
-		int flag = 0;
-		while (pos != NULL) {
-			int ii = pos->ii;
-			double Pii = pos->P;
-			pos2 = pos->next;
-			
-			if (P[getIndex(ii,1,N)] > pTransTol) { //reached the end state. 
-				p = Pii + log(P[getIndex(ii,1,N)]);
-				p = exp(p);			// this is the probability of the sequence. 
-				nU += 1;			// found a unique sequence. 
-				seqP[nU] = p;
-				
-				if (nU >= memSize-1) { // increase the mempry size
-					memSize += memSizeInc; 
-					seqP = (double *) realloc(seqP, memSize * sizeof(double));					
-				}
-				
-				Ptot += p;
-			}
-			for (int k=2; k<N; k++) {
-				if (P[getIndex(ii,k,N)] > pTransTol){
-					p = Pii + log(P[getIndex(ii,k,N)]);
-					if (p > log(pTol)) { //sequence is growing. add new front to the list
-						newNode = (NodeD *) malloc(sizeof(NodeD));
-						newNode->parent = NULL;
-						newNode->next = NULL;
-						newNode->ii = k;
-						newNode->P = p;
-						AddNodeToHeadNodeD(&HeadNode, newNode);						
-						//mark that the front is growing. 
-						flag = 1;
-					} 						
-				}
-			}
-			
-			if (pos != NULL) { //done with this front, delete. 
-				DeleteNodeD(&HeadNode,pos);
-			}
-			pos = pos2;
-		}
-		
-		if (Ptot > PtotTol) {// found enough unique sequences, quit. 
-			//printf("Ptot=%f\n",Ptot);
-			break;		
-		}
-		if (flag == 0) {//no new front, quit.
-			break;
-		}
-	}
+    FindUniqueSequencesC(N, S, P, &Ns, &Ps, &Seqs, PSsmall);
 
-	seqP[0] = nU;
-	//normalize. 
-	double ssum = 0.0;
-	for (int i=0; i<nU; i++) ssum += seqP[i+1]; //note seqP[0] = nU. 
-	for (int i=0; i<nU; i++) seqP[i+1] /= ssum; 	
-	
-	if (HeadNode != NULL) DeleteLinkNodeD(&HeadNode);	
-	return seqP;	
+    if (Ns < 0) return NULL;
+
+    double *seqP = (double *)malloc((Ns + 1) * sizeof(double));
+    if (seqP == NULL) {
+        if (Ps != NULL) free(Ps);
+        if (Seqs != NULL) {
+            for (int i = 0; i < Ns; i++) {
+                if (Seqs[i] != NULL) {
+                    LinkedList *pp = Seqs[i];
+                    while (pp != NULL) {
+                        LinkedList *next = pp->next;
+                        if (pp->node != NULL) free(pp->node);
+                        free(pp);
+                        pp = next;
+                    }
+                }
+            }
+            free(Seqs);
+        }
+        return NULL;
+    }
+
+    seqP[0] = (double)Ns;
+
+    double ssum = 0.0;
+    for (int i = 0; i < Ns; i++) {
+        seqP[i + 1] = Ps[i];
+        ssum += Ps[i];
+    }
+
+    if (ssum > 0.0) {
+        for (int i = 0; i < Ns; i++) {
+            seqP[i + 1] /= ssum;
+        }
+    }
+
+    free(Ps);
+
+    if (Seqs != NULL) {
+        for (int i = 0; i < Ns; i++) {
+            if (Seqs[i] != NULL) {
+                LinkedList *pp = Seqs[i];
+                while (pp != NULL) {
+                    LinkedList *next = pp->next;
+                    if (pp->node != NULL) free(pp->node);
+                    free(pp);
+                    pp = next;
+                }
+            }
+        }
+        free(Seqs);
+    }
+
+    return seqP;
 }
+
 
 int selectSeq(double* pU, int nU) 
 {
@@ -1236,27 +1223,23 @@ void getModifiedSequenceCompletenessSamplingModelC(int nSeqs, int N, int *S, dou
         return;
     }
 
-    double *seqP, *pU;
-    int nU;
+    double *seqP = getUniqueSeqProbsPOMM(N, S, P);
+    if (!seqP) return;
 
-    seqP = getUniqueSeqProbsPOMM(N, S, P);
-    nU = (int)seqP[0];
-
+    int nU = (int)seqP[0];
     if (nU <= 0) {
         free(seqP);
         return;
     }
 
-    pU = (double *)malloc(nU * sizeof(double));
-    int *selIDs = (int *)malloc(nU * sizeof(int));
-    int *KIDs   = (int *)malloc(nU * sizeof(int));
+    double *pU = (double *)malloc(nU * sizeof(double));
+    int *counts = (int *)malloc(nU * sizeof(int));
     AliasTableEntry *aliasTable = (AliasTableEntry *)malloc(nU * sizeof(AliasTableEntry));
 
-    if (!pU || !selIDs || !KIDs || !aliasTable) {
+    if (!pU || !counts || !aliasTable) {
         free(seqP);
         free(pU);
-        free(selIDs);
-        free(KIDs);
+        free(counts);
         free(aliasTable);
         return;
     }
@@ -1266,50 +1249,33 @@ void getModifiedSequenceCompletenessSamplingModelC(int nSeqs, int N, int *S, dou
     }
     free(seqP);
 
-    printf("    Found nU=%d unique sequences\n", nU);
-
     initializeAliasTable(pU, nU, aliasTable);
 
     for (int isam = 0; isam < nSample; isam++) {
         for (int i = 0; i < nU; i++) {
-            selIDs[i] = -1;
-            KIDs[i] = 0;
+            counts[i] = 0;
         }
-
-        int nSel = 0;
 
         for (int iseq = 0; iseq < nSeqs; iseq++) {
             int k = sampleAliasMethod(aliasTable, nU);
-
-            int flag = 0, mk = -1;
-            for (int j = 0; j < nSel; j++) {
-                if (selIDs[j] == k) {
-                    flag = 1;
-                    mk = j;
-                    break;
-                }
-            }
-
-            if (flag == 0) {
-                selIDs[nSel] = k;
-                KIDs[nSel] = 1;
-                nSel += 1;
-            } else {
-                KIDs[mk] += 1;
-            }
+            counts[k] += 1;
         }
 
         double Pc = 0.0;
-        for (int i = 0; i < nSel; i++) {
-            Pc += pU[selIDs[i]];
+        for (int i = 0; i < nU; i++) {
+            if (counts[i] > 0) {
+                Pc += pU[i];
+            }
         }
 
         double dd = 0.0;
         if (Pc > 0.0) {
-            for (int i = 0; i < nSel; i++) {
-                double ps = (double)KIDs[i] / nSeqs;
-                double pm = pU[selIDs[i]] / Pc;
-                dd += 0.5 * fabs(ps - pm);
+            for (int i = 0; i < nU; i++) {
+                if (counts[i] > 0) {
+                    double ps = (double)counts[i] / nSeqs;
+                    double pm = pU[i] / Pc;
+                    dd += 0.5 * fabs(ps - pm);
+                }
             }
         }
 
@@ -1317,8 +1283,7 @@ void getModifiedSequenceCompletenessSamplingModelC(int nSeqs, int N, int *S, dou
     }
 
     free(pU);
-    free(selIDs);
-    free(KIDs);
+    free(counts);
     free(aliasTable);
 }
 
