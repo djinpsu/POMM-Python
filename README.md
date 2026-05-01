@@ -12,6 +12,9 @@ Major update: 3/27/2026. A more robust method of inferring POMM is introduced. T
     NGramPOMMSearch
     
 Major update: 4/21/2026. An important bug fixed. Download all files and compile fresh if used the previous version. 
+
+Major update: 5/1/2026. Optimized C code for reduction of memory usage. Various bug fixes. The number of processes used 
+    is automatically set in POMM.py. If needed to reduce CPU usage, change nProc in POMM.py. 
    
         Default POMM inferenece method
    
@@ -19,12 +22,11 @@ Major update: 4/21/2026. An important bug fixed. Download all files and compile 
         Successively build n-gram transition models, and test for Pbeta significance.
         Then merge states. 
    
-        S, P, pv, PBs, PbT = NGramPOMMSearch(osIn, pValue=0.05, Pcut=0.001, stateMergeParam=[1, 0.1, 0.1], nProc=2, nSample = 10000, ngramStart = 1, fnSave=''):
+        S, P, pv, PBs, PbT = NGramPOMMSearch(osIn, pValue=0.05, Pcut=0.001, stateMergeParam=[1, 0.1, 0.1], nSample = 10000, ngramStart = 1, fnSave=''):
 
         Inputs: 
         
         osIn    - list of observed sequences. Symbols must be 1,2,...,n, where n is the number of symbols. 
-        nProc   - number of processes used for BW
         pValue  - p-value for accepting the POMM using Pc. 
         nSample - number of samples for calculating pValue. 
         ngramStart - starting ngram, 1, MARKOV, 2, second oreder Markov, etc.
