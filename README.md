@@ -76,12 +76,6 @@ Useful concepts:
 
     Transition probabilities P: transition probabilties between the states.   
 
-The program uses mutiple cores for speeding up computation. Set 
-
-      nProc = 10
-
-in POMM.py if you have 10 cores on your CPU, for example. 
-
 Another example is coolingBengaleseFinch.py. This file takes sequences in the file 150mA_u_left_tl.annot_observed_sequences.txt and learns POMM. 
 The user can dapat this code to use their own sequences. 
 
