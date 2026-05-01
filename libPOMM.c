@@ -662,443 +662,433 @@ void DeleteListD(DLinkedList **list)
 	*list = NULL;
 }
 
+void FreeSequenceList(LinkedList *ss) {
+    LinkedList *p = ss;
+    while (p != NULL) {
+        LinkedList *next = p->next;
+        if (p->node != NULL) free(p->node);
+        free(p);
+        p = next;
+    }
+}		
 
-void FindUniqueStateSequencesC(int N, double *P, LinkedList **ends, LinkedList **allNodes, double PSsmall)
+void FindUniqueStateSequencesC_CSR(
+    CSRMatrix *A,
+    LinkedList **ends,
+    LinkedList **allNodes,
+    double PSsmall
+)
 {
-	//parameters
-	double Pcut=0.001;
-	int maxSteps = 1000;
-	double Pterminal = 0.001;	//allowed residue total probabilities of the sequences. 
-	int ii,i,j;
-	double p0, p2;
-	DLinkedList *pp,*pp0, *pp2; 
-	int *flags;
-	Node *nNode, *nodeOld;
-	double Pa;
-	int flag, istep, flagNoNext;
-	DLinkedList *activeEnds;
-	LinkedList *pp3;
-	//printf("In FindUniqueStateSequencesC PSsmall=%lf\n",PSsmall);
-	
-	activeEnds = (DLinkedList *) malloc(sizeof(DLinkedList));
-	activeEnds->pre = NULL;
-	activeEnds->next = NULL;
-	nNode = (Node *) malloc(sizeof(Node));
-	nNode->parent = NULL;
-	nNode->ii = 0;
-	nNode->P = 1.0;
-	activeEnds->node = nNode;
-		
-	for (istep=0; istep<maxSteps; istep++) {
-		pp = activeEnds;	
-		if (pp == NULL) break;
-		while (1) {	
-			ii = pp->node->ii;
-			flag = 0;
-			flagNoNext = 0;
-			nodeOld = pp->node;
-			p0 = pp->node->P;
-			for (j=0; j<N; j++) {
-				if (P[ii*N+j] > Pcut) {
-					p2 = p0 * P[ii*N+j]; 
-					nNode = (Node *) malloc(sizeof(Node));
-					nNode->parent = nodeOld;
-					nNode->P = p2;	
-					nNode->ii = j;
-					if (j == 1 || p2 < PSsmall) {	//end state or small probability sequence, mark stop. 
-						nNode->ii = 1;
-					}
-					AppendNodeToList(allNodes, nNode);
-					
-					if (flag == 0) {//replace the node.
-						if (nNode->ii == 1) {//add to ends and remove from activeEnds
-							AddNodeToHead(ends,nNode);					
-							if (pp->pre == NULL) {//this is the head.
-								pp0 = pp->next;
-								//free(pp);
-								pp = pp0;
-								if (pp != NULL) {
-									pp->pre = NULL;
-								}
-								activeEnds = pp;
-								flagNoNext = 1;	
-							} else {	
-								pp0 = pp->pre;
-								pp0->next = pp->next;
-								if (pp->next != NULL) {
-									pp->next->pre = pp0;
-								} else {
-									pp0->next = NULL;
-								}
-								free(pp);
-								pp = pp0;
-							}
+    double Pcut = 0.0;       // safer than 0.001 for sparse model
+    int maxSteps = 1000;
+    double Pterminal = 0.001;
 
-						} else {
-							pp->node = nNode;
-						}
-						flag = 1;
-					} else { //add to the head. 
-						if (nNode->ii == 1) {
-							AddNodeToHead(ends,nNode);
-						} else {//active node.
-							AddNodeToHeadD(&activeEnds,nNode);
-						}
-					}
-				}
-			}
-			if (flagNoNext == 0) pp = pp->next;
-			if (pp == NULL) break;	
-		}
-			
-		Pa = 0.0;
-		pp3 = *ends;
-		while (pp3 != NULL) {
-			Pa += pp3->node->P;
-			pp3 = pp3->next;
-		}	
-		if (Pa > 1.0 - Pterminal) {
-			break;
-		} 	
-	}
-	DeleteListD(&activeEnds);
-}	
-		
+    int ii, j, istep;
+    double p0, p2, Pa;
 
-void FindUniqueSequencesC(int N, int *S, double *P, int *Ns, double **Ps, LinkedList ***Seqs, double PSsmall)
-{	
-	LinkedList *ends, *pp, *pp2, *pp3, *pp0, *allNodes, *ss;
-	int ii, jj, kk, ns, flag, flag2;
-	Node *node, *node2;
-	double PP;
-		
-	ends = NULL;
-	allNodes = (LinkedList *) malloc(sizeof(LinkedList));
-	allNodes->node = NULL;
-	allNodes->next = NULL;
-	
-	FindUniqueStateSequencesC(N, P, &ends, &allNodes, PSsmall);
-	
-	ns = 0;
-	pp = ends;
-	while(1) {
-		ns += 1;
-		pp = pp->next;
-		if (pp == NULL) break;
-	}
-	
-	//print state sequences. 
-	pp = ends;
-	kk = 0;
-	while(1) {
-		kk += 1;
-		if (kk > ns - 10) {//only print top 10}
-			node = pp->node;
-			while (1) {
-				node = node->parent;
-				if (node == NULL) break;
-			}
-		} 
-		pp = pp->next;
-		if (pp == NULL) break;
-	}
-	
-	
-	//allocate memory for sequences. 
-	*Seqs = (LinkedList **) malloc(ns * sizeof(LinkedList *));
-	*Ps = (double *) malloc(ns * sizeof(double));
-	for (ii=0; ii<ns; ii++) *(*Ps+ii) = 0.0;
-	*Ns = 0;
-	
-	//get the sequences
-	pp0 = ends;
-	while (1) {
-		node = pp0->node;
-		PP = node->P;
-		if (node->ii == 1)	{//end state
-			node = node->parent;
-		}
-		ss = (LinkedList *) malloc(sizeof(LinkedList));
-		ss->next = NULL;
-		kk=0;
-		while (1) {
-			node2 = (Node *)malloc(sizeof(Node));			
-			node2->ii = S[node->ii];
-			node2->P = PP;
-			node2->parent = NULL;
-			if (kk==0) {
-				ss->node = node2;
-				ss->node->P = PP;
-				ss->next = NULL;
-				kk = 1;
-			}
-			else {
-				AddNodeToHead(&ss,node2);
-			}
-			node = node->parent;
-			if (node == NULL) break;
-			if (node->ii == 0) break;	//start symbol
-		}
-					
-		//check if the sequence is already in the list. 
-		flag = 1;
-		for (ii=0; ii<*Ns; ii++) {
-			pp2 = *(*Seqs+ii);
-			pp3 = ss;
-			flag = 0;
-			while (1) {
-				if (pp2->node->ii != pp3->node->ii) {	//not the same sequence
-					flag = 1;
-					break;
-				}
-				pp2 = pp2->next;
-				pp3 = pp3->next;
-				if ((pp2 != NULL && pp3 == NULL) || (pp2 == NULL && pp3 != NULL)) {
-					flag = 1;
-					break;
-				}
-				if (pp2 == NULL && pp3 == NULL) {
-					break;
-				}
-			}
-			if (flag == 0) {	//found the matching sequence.
-				break;
-			}
-		}	
-		if (flag == 0) {//old sequence. 
-			*(*Ps+ii) += ss->node->P;
-		} else {	//new sequence				
-			//assign to Seqs
-			*(*Seqs + *Ns) = ss;
-			*(*Ps + *Ns) = ss->node->P;
-			*Ns +=1;
-		}
-		
-		pp0 = pp0->next;
-		if (pp0 == NULL) break;
-	}
-			
-	//free memory, remove all nodes. 
-	pp = allNodes->next;
-	while (1) {
-		node = pp->node;
-		free(node);
-		pp = pp->next;
-		if (pp == NULL) break;
-	}
-		
-	//clear linked list. 
-	DeleteList(&ends);	
-	DeleteList(&allNodes);
-	
+    DLinkedList *pp, *pp0;
+    Node *nNode, *nodeOld;
+    int flag, flagNoNext;
+    DLinkedList *activeEnds;
+    LinkedList *pp3;
+
+    int N = A->N;
+
+    activeEnds = (DLinkedList *) malloc(sizeof(DLinkedList));
+    if (activeEnds == NULL) return;
+
+    activeEnds->pre = NULL;
+    activeEnds->next = NULL;
+
+    nNode = (Node *) malloc(sizeof(Node));
+    if (nNode == NULL) {
+        free(activeEnds);
+        return;
+    }
+
+    nNode->parent = NULL;
+    nNode->ii = 0;
+    nNode->P = 1.0;
+    activeEnds->node = nNode;
+
+    AppendNodeToList(allNodes, nNode);
+
+    for (istep = 0; istep < maxSteps; istep++) {
+        pp = activeEnds;
+        if (pp == NULL) break;
+
+        while (pp != NULL) {
+            ii = pp->node->ii;
+            flag = 0;
+            flagNoNext = 0;
+            nodeOld = pp->node;
+            p0 = pp->node->P;
+
+            for (int kk = A->rowPtr[ii]; kk < A->rowPtr[ii + 1]; kk++) {
+                j = A->colInd[kk];
+                double pij = A->val[kk];
+
+                if (pij > Pcut) {
+                    p2 = p0 * pij;
+
+                    nNode = (Node *) malloc(sizeof(Node));
+                    if (nNode == NULL) {
+                        DeleteListD(&activeEnds);
+                        return;
+                    }
+
+                    nNode->parent = nodeOld;
+                    nNode->P = p2;
+                    nNode->ii = j;
+
+                    if (j == 1 || p2 < PSsmall) {
+                        nNode->ii = 1;
+                    }
+
+                    AppendNodeToList(allNodes, nNode);
+
+                    if (flag == 0) {
+                        if (nNode->ii == 1) {
+                            AddNodeToHead(ends, nNode);
+
+                            if (pp->pre == NULL) {
+                                pp0 = pp->next;
+
+                                DLinkedList *old = pp;
+
+                                pp = pp0;
+                                if (pp != NULL) {
+                                    pp->pre = NULL;
+                                }
+
+                                activeEnds = pp;
+                                free(old);
+
+                                flagNoNext = 1;
+                            } else {
+                                pp0 = pp->pre;
+                                pp0->next = pp->next;
+
+                                if (pp->next != NULL) {
+                                    pp->next->pre = pp0;
+                                }
+
+                                DLinkedList *old = pp;
+                                pp = pp0;
+                                free(old);
+                            }
+                        } else {
+                            pp->node = nNode;
+                        }
+
+                        flag = 1;
+                    } else {
+                        if (nNode->ii == 1) {
+                            AddNodeToHead(ends, nNode);
+                        } else {
+                            AddNodeToHeadD(&activeEnds, nNode);
+                        }
+                    }
+                }
+            }
+
+            if (flagNoNext == 0) {
+                pp = pp->next;
+            }
+        }
+
+        Pa = 0.0;
+        pp3 = *ends;
+        while (pp3 != NULL) {
+            Pa += pp3->node->P;
+            pp3 = pp3->next;
+        }
+
+        if (Pa > 1.0 - Pterminal) {
+            break;
+        }
+    }
+
+    DeleteListD(&activeEnds);
 }
 
-//Add sym to the tree structure. Returns the pointer to the node. 
-NodeSym *AddSym(NodeSym *parent, int sym,  LinkedListNodeSym *allNodes)
+void FreeLinkedSequence(LinkedList *ss)
 {
-	if (parent == NULL) {
-		printf("ERROR in AddSym: parent pointer is NULL.\n");
-		exit(1);
-	}
-	//check the linked list of the daughters. 
-	LinkedListNodeSym *daughter;
-	daughter = parent->daughterNodeSym;
-	while (daughter != NULL) {
-		if (daughter->node->sym == sym) {//found the node with the sym.
-			daughter->node->count += 1;
-			return &(*(daughter->node));
-		}
-		daughter = daughter->next;
-	}
-	//did not find the sym, create a new node.
-	NodeSym *node;
-	node = (NodeSym*) malloc(sizeof(NodeSym));
-	node->parent = parent;
-	node->daughterNodeSym = NULL;
-	node->sym = sym;
-	node->count = 1;
-	
-	allNodes->next = (LinkedListNodeSym *) malloc(sizeof(LinkedListNodeSym));
-	allNodes->next->node = node; //collect the pointer for freeing memory at the end. 
-	allNodes->next->next = NULL;
-	allNodes = allNodes->next;
-	
-	daughter = parent->daughterNodeSym;
-	if (daughter == NULL) {
-		daughter = (LinkedListNodeSym *) malloc(sizeof(LinkedListNodeSym));
-		daughter->node = node;
-		daughter->next = NULL;
-		parent->daughterNodeSym = daughter;
-	} else {
-		while (1) {
-			if (daughter -> next == NULL) {
-				daughter->next = (LinkedListNodeSym *) malloc(sizeof(LinkedListNodeSym));
-				daughter->next->node = node;
-				daughter->next->next = NULL;
-				break;
-			}
-			daughter = daughter ->next;		
-		}
-	}
-	return &(*node);
+    LinkedList *p = ss;
+
+    while (p != NULL) {
+        LinkedList *next = p->next;
+
+        if (p->node != NULL) {
+            free(p->node);
+        }
+
+        free(p);
+        p = next;
+    }
 }
 
-void DeleteLinkedListNodeSym(LinkedListNodeSym *list)
+void FindUniqueSequencesC_CSR(
+    int N,
+    int *S,
+    CSRMatrix *A,
+    int *Ns,
+    double **Ps,
+    LinkedList ***Seqs,
+    double PSsmall
+)
 {
-	LinkedListNodeSym *p, *next;
-	p = list;
-	while (p != NULL) {
-		next = p->next;
-		free(p);
-		p = next;
-	}
-	list = NULL;
+    LinkedList *ends, *pp, *pp2, *pp3, *pp0, *allNodes, *ss;
+    int ii, kk, ns, flag;
+    Node *node, *node2;
+    double PP;
+
+    ends = NULL;
+
+    allNodes = (LinkedList *) malloc(sizeof(LinkedList));
+    if (allNodes == NULL) {
+        *Ns = 0;
+        *Ps = NULL;
+        *Seqs = NULL;
+        return;
+    }
+
+    allNodes->node = NULL;
+    allNodes->next = NULL;
+
+    FindUniqueStateSequencesC_CSR(A, &ends, &allNodes, PSsmall);
+
+    if (ends == NULL) {
+        *Ns = 0;
+        *Ps = NULL;
+        *Seqs = NULL;
+
+        DeleteList(&allNodes);
+        return;
+    }
+
+    ns = 0;
+    pp = ends;
+    while (pp != NULL) {
+        ns += 1;
+        pp = pp->next;
+    }
+
+    *Seqs = (LinkedList **) malloc(ns * sizeof(LinkedList *));
+    *Ps = (double *) malloc(ns * sizeof(double));
+
+    if (*Seqs == NULL || *Ps == NULL) {
+        if (*Seqs != NULL) free(*Seqs);
+        if (*Ps != NULL) free(*Ps);
+
+        *Seqs = NULL;
+        *Ps = NULL;
+        *Ns = 0;
+
+        pp = allNodes->next;
+        while (pp != NULL) {
+            LinkedList *next = pp->next;
+            if (pp->node != NULL) free(pp->node);
+            free(pp);
+            pp = next;
+        }
+
+        DeleteList(&ends);
+        free(allNodes);
+
+        return;
+    }
+
+    for (ii = 0; ii < ns; ii++) {
+        (*Seqs)[ii] = NULL;
+        (*Ps)[ii] = 0.0;
+    }
+
+    *Ns = 0;
+
+    pp0 = ends;
+    while (pp0 != NULL) {
+        node = pp0->node;
+        PP = node->P;
+
+        if (node->ii == 1) {
+            node = node->parent;
+        }
+
+        if (node == NULL) {
+            pp0 = pp0->next;
+            continue;
+        }
+
+        ss = (LinkedList *) malloc(sizeof(LinkedList));
+        if (ss == NULL) {
+            pp0 = pp0->next;
+            continue;
+        }
+
+        ss->next = NULL;
+        ss->node = NULL;
+
+        kk = 0;
+
+        while (node != NULL) {
+            node2 = (Node *) malloc(sizeof(Node));
+            if (node2 == NULL) {
+                FreeLinkedSequence(ss);
+                ss = NULL;
+                break;
+            }
+
+            node2->ii = S[node->ii];
+            node2->P = PP;
+            node2->parent = NULL;
+
+            if (kk == 0) {
+                ss->node = node2;
+                ss->node->P = PP;
+                ss->next = NULL;
+                kk = 1;
+            } else {
+                AddNodeToHead(&ss, node2);
+            }
+
+            node = node->parent;
+
+            if (node == NULL) break;
+            if (node->ii == 0) break;
+        }
+
+        if (ss == NULL) {
+            pp0 = pp0->next;
+            continue;
+        }
+
+        /*
+           Check whether this emitted symbolic sequence already exists.
+           flag == 0 means found matching old sequence.
+           flag == 1 means new sequence.
+        */
+        flag = 1;
+
+        for (ii = 0; ii < *Ns; ii++) {
+            pp2 = (*Seqs)[ii];
+            pp3 = ss;
+
+            flag = 0;
+
+            while (1) {
+                if (pp2->node->ii != pp3->node->ii) {
+                    flag = 1;
+                    break;
+                }
+
+                pp2 = pp2->next;
+                pp3 = pp3->next;
+
+                if ((pp2 != NULL && pp3 == NULL) ||
+                    (pp2 == NULL && pp3 != NULL)) {
+                    flag = 1;
+                    break;
+                }
+
+                if (pp2 == NULL && pp3 == NULL) {
+                    break;
+                }
+            }
+
+            if (flag == 0) {
+                break;
+            }
+        }
+
+        if (flag == 0) {
+            /*
+               Old emitted sequence. Add probability and free temporary ss.
+            */
+            (*Ps)[ii] += ss->node->P;
+            FreeLinkedSequence(ss);
+        } else {
+            /*
+               New emitted sequence.
+            */
+            (*Seqs)[*Ns] = ss;
+            (*Ps)[*Ns] = ss->node->P;
+            *Ns += 1;
+        }
+
+        pp0 = pp0->next;
+    }
+
+    /*
+       Free state-path nodes stored in allNodes.
+       allNodes is a sentinel. Its first real node is allNodes->next.
+    */
+    pp = allNodes->next;
+    while (pp != NULL) {
+        LinkedList *next = pp->next;
+
+        if (pp->node != NULL) {
+            free(pp->node);
+        }
+
+        free(pp);
+        pp = next;
+    }
+
+    DeleteList(&ends);
+    free(allNodes);
 }
-	
 
-//compute the sequennce probability. 
-//start with 0 and end with -1. 
-double computeSeqProbPOMM(int N, int *S, double *P, int ns, int *seq) {
-	
-	double *A;
-	A = (double *) malloc(N*ns*sizeof(double));
-	
-	int i,j;
-	for (i=0; i<N*ns; i++) A[i] = 0;
-	A[getIndex2(0,0,N,ns)] = 1.0;
-	for (int t=1; t<ns; t++) {
-		for (j=0; j<N; j++) {
-			if (S[j] == seq[t]) {
-				for (i=0; i<N; i++) {
-					A[getIndex2(j,t,N,ns)] += P[getIndex(i,j,N)] * A[getIndex2(i,t-1,N,ns)];
-				}
-			}
-		}
-	}	
-	double pseq = A[getIndex2(1,ns-1,N,ns)];
-	
-	free(A);
-	return pseq;
-}
-
-
-//double linked list of NodeDs 
-void AddNodeToHeadNodeD(NodeD **HeadNode, NodeD *node)
+double *getUniqueSeqProbsPOMM_CSR(int N, int *S, CSRMatrix *A)
 {
-	if (HeadNode == NULL) return; 
-	
-	if (*HeadNode == NULL) {
-		*HeadNode = node;
-		(*HeadNode)->parent = NULL;
-		(*HeadNode)->next = NULL;
-	} else {
-		node->parent = NULL;
-		node->next = *HeadNode;
-		(*HeadNode)->parent = node;
-		*HeadNode = node;
-	}
-}
-
-void DeleteLinkNodeD(NodeD **HeadNode){
-	NodeD *pos, *next;
-	
-	if (HeadNode == NULL) return; 
-	if (*HeadNode == NULL) return;
-	pos = *HeadNode;
-	while (pos != NULL) {
-		next = pos->next;
-		free(pos);
-		pos = next;
-	}	
-	*HeadNode = NULL;
-}
-
-void DeleteNodeD(NodeD **HeadNode, NodeD *node)
-{
-	if (HeadNode == NULL) return; 
-	if (*HeadNode == NULL) return;
-	if (node == NULL) return;
-	if (node->parent == NULL) {
-		if (node->next == NULL) {//all deleted. 
-			*HeadNode = NULL;
-		} else {
-			*HeadNode = node->next;
-			(*HeadNode)->parent = NULL;
-		}	
-	} else {
-		node->parent->next = node->next;
-		if (node->next != NULL) {
-			node->next->parent = node->parent;
-		}			
-	}
-	free(node);
-}
-
-int LengthLinkNodeD(NodeD **HeadNode)
-{
-	if (HeadNode == NULL) return 0; 
-	if (*HeadNode == NULL) return 0;
-	NodeD *pos;
-	int n = 0;
-	pos = *HeadNode;
-	while (pos != NULL) {
-		n += 1;
-		pos = pos->next;
-	}
-	return n;
-}
-
-
-
-void freeArray(double *pt)
-{
-	free(pt);
-}
-
-void freeArrayInt(int *pt)
-{
-	free(pt);
-}
-
-
-//find all unique sequences and probabilities up to a tolerance. 
-//returns number of unique sequences. 
-//pointer seqP will be pointing to the transition probabilities of the unique sequences
-double *getUniqueSeqProbsPOMM(int N, int *S, double *P)
-{
-    const double PSsmall = 1e-5;   // same role as old path cutoff
+    const double PSsmall = 1e-5;
 
     int Ns = 0;
     double *Ps = NULL;
     LinkedList **Seqs = NULL;
 
-    FindUniqueSequencesC(N, S, P, &Ns, &Ps, &Seqs, PSsmall);
+    FindUniqueSequencesC_CSR(N, S, A, &Ns, &Ps, &Seqs, PSsmall);
 
-    if (Ns < 0) return NULL;
+    if (Ns <= 0 || Ps == NULL) {
+        if (Ps != NULL) {
+            free(Ps);
+        }
 
-    double *seqP = (double *)malloc((Ns + 1) * sizeof(double));
+        if (Seqs != NULL) {
+            free(Seqs);
+        }
+
+        double *seqP = (double *) malloc(sizeof(double));
+        if (seqP != NULL) {
+            seqP[0] = 0.0;
+        }
+
+        return seqP;
+    }
+
+    double *seqP = (double *) malloc((Ns + 1) * sizeof(double));
+
     if (seqP == NULL) {
-        if (Ps != NULL) free(Ps);
+        if (Ps != NULL) {
+            free(Ps);
+        }
+
         if (Seqs != NULL) {
             for (int i = 0; i < Ns; i++) {
                 if (Seqs[i] != NULL) {
-                    LinkedList *pp = Seqs[i];
-                    while (pp != NULL) {
-                        LinkedList *next = pp->next;
-                        if (pp->node != NULL) free(pp->node);
-                        free(pp);
-                        pp = next;
-                    }
+                    FreeLinkedSequence(Seqs[i]);
                 }
             }
             free(Seqs);
         }
+
         return NULL;
     }
 
-    seqP[0] = (double)Ns;
+    seqP[0] = (double) Ns;
 
     double ssum = 0.0;
+
     for (int i = 0; i < Ns; i++) {
         seqP[i + 1] = Ps[i];
         ssum += Ps[i];
@@ -1115,19 +1105,203 @@ double *getUniqueSeqProbsPOMM(int N, int *S, double *P)
     if (Seqs != NULL) {
         for (int i = 0; i < Ns; i++) {
             if (Seqs[i] != NULL) {
-                LinkedList *pp = Seqs[i];
-                while (pp != NULL) {
-                    LinkedList *next = pp->next;
-                    if (pp->node != NULL) free(pp->node);
-                    free(pp);
-                    pp = next;
-                }
+                FreeLinkedSequence(Seqs[i]);
             }
         }
         free(Seqs);
     }
 
     return seqP;
+}
+
+typedef struct {
+    int alias;
+    double prob;
+} AliasTableEntry;
+
+void initializeAliasTable(double *probs, int N, AliasTableEntry *aliasTable);
+static int sampleAliasMethod(AliasTableEntry *aliasTable, int N);
+
+void getModifiedSequenceCompletenessSamplingModelCSR_C(
+    int nSeqs,
+    int N,
+    int *S,
+    int nnz,
+    int *rowPtr,
+    int *colInd,
+    double *val,
+    int nSample,
+    double *PBs,
+    double beta,
+    int randSeed
+)
+{
+    if (randSeed != -1) {
+        srand((unsigned int) randSeed);
+    } else {
+        srand((unsigned int) time(NULL));
+    }
+
+    if (nSeqs <= 0 || nSample <= 0) {
+        return;
+    }
+
+    CSRMatrix A;
+    A.N = N;
+    A.nnz = nnz;
+    A.rowPtr = rowPtr;
+    A.colInd = colInd;
+    A.val = val;
+
+    double *seqP = getUniqueSeqProbsPOMM_CSR(N, S, &A);
+
+    if (!seqP) return;
+
+    int nU = (int) seqP[0];
+
+    if (nU <= 0) {
+        free(seqP);
+        return;
+    }
+
+    double *pU = (double *) malloc(nU * sizeof(double));
+    int *counts = (int *) malloc(nU * sizeof(int));
+    AliasTableEntry *aliasTable =
+        (AliasTableEntry *) malloc(nU * sizeof(AliasTableEntry));
+
+    if (!pU || !counts || !aliasTable) {
+        free(seqP);
+        free(pU);
+        free(counts);
+        free(aliasTable);
+        return;
+    }
+
+    for (int i = 0; i < nU; i++) {
+        pU[i] = seqP[i + 1];
+    }
+
+    free(seqP);
+
+    initializeAliasTable(pU, nU, aliasTable);
+
+    for (int isam = 0; isam < nSample; isam++) {
+        for (int i = 0; i < nU; i++) {
+            counts[i] = 0;
+        }
+
+        for (int iseq = 0; iseq < nSeqs; iseq++) {
+            int k = sampleAliasMethod(aliasTable, nU);
+
+            if (k >= 0 && k < nU) {
+                counts[k] += 1;
+            }
+        }
+
+        double Pc = 0.0;
+
+        for (int i = 0; i < nU; i++) {
+            if (counts[i] > 0) {
+                Pc += pU[i];
+            }
+        }
+
+        double dd = 0.0;
+
+        if (Pc > 0.0) {
+            for (int i = 0; i < nU; i++) {
+                if (counts[i] > 0) {
+                    double ps = (double) counts[i] / (double) nSeqs;
+                    double pm = pU[i] / Pc;
+                    dd += 0.5 * fabs(ps - pm);
+                }
+            }
+        }
+
+        PBs[isam] = (1.0 - beta) * Pc + beta * (1.0 - dd);
+    }
+
+    free(pU);
+    free(counts);
+    free(aliasTable);
+}
+
+// compute the sequence probability using CSR transition matrix P.
+// start state is 0 and end state is 1.
+// seq[0] should correspond to start symbol/state condition,
+// seq[ns-1] should correspond to end condition.
+double computeSeqProbPOMM_CSR(
+    int N,
+    int *S,
+    int *row_ptr,
+    int *col_ind,
+    double *Pval,
+    int ns,
+    int *seq
+) {
+    double *A_prev = (double *) malloc(N * sizeof(double));
+    double *A_curr = (double *) malloc(N * sizeof(double));
+
+    if (A_prev == NULL || A_curr == NULL) {
+        if (A_prev) free(A_prev);
+        if (A_curr) free(A_curr);
+        return 0.0;
+    }
+
+    int i, j, k, t;
+
+    for (i = 0; i < N; i++) {
+        A_prev[i] = 0.0;
+        A_curr[i] = 0.0;
+    }
+
+    // Start state
+    A_prev[0] = 1.0;
+
+    for (t = 1; t < ns; t++) {
+
+        // reset current alpha
+        for (j = 0; j < N; j++) {
+            A_curr[j] = 0.0;
+        }
+
+        // propagate probability mass through sparse outgoing transitions
+        for (i = 0; i < N; i++) {
+            double ai = A_prev[i];
+
+            if (ai == 0.0) continue;
+
+            for (k = row_ptr[i]; k < row_ptr[i + 1]; k++) {
+                j = col_ind[k];
+
+                if (S[j] == seq[t]) {
+                    A_curr[j] += Pval[k] * ai;
+                }
+            }
+        }
+
+        // swap A_prev and A_curr
+        double *tmp = A_prev;
+        A_prev = A_curr;
+        A_curr = tmp;
+    }
+
+    double pseq = A_prev[1];
+
+    free(A_prev);
+    free(A_curr);
+
+    return pseq;
+}
+
+void freeArray(double *pt)
+{
+	free(pt);
+}
+
+void freeArrayInt(int *pt)
+{
+	free(pt);
 }
 
 
@@ -1150,29 +1324,31 @@ int selectSeq(double* pU, int nU)
 // START 
 // Alias method of sampling. Sample M times from N items using probabilities p_i. 
 			
-typedef struct {
-    int alias;
-    double prob;
-} AliasTableEntry;
-
 void initializeAliasTable(double *probs, int N, AliasTableEntry *aliasTable) {
-
-	double *prob = (double *)malloc(N * sizeof(double));
+    double *prob = (double *)malloc(N * sizeof(double));
     int *small = (int *)malloc(N * sizeof(int));
     int *large = (int *)malloc(N * sizeof(int));
 
+    if (!prob || !small || !large) {
+        free(prob);
+        free(small);
+        free(large);
+        return;
+    }
+
     int smallCount = 0, largeCount = 0;
 
-    // Step 1: Initialize the prob array and classify each probability as small or large
     for (int i = 0; i < N; ++i) {
-        prob[i] = probs[i] * N; // Scale up probabilities by N
+        aliasTable[i].alias = i;
+        aliasTable[i].prob = 1.0;
+
+        prob[i] = probs[i] * N;
         if (prob[i] < 1.0)
             small[smallCount++] = i;
         else
             large[largeCount++] = i;
     }
 
-    // Step 2: Process the small and large lists
     while (smallCount > 0 && largeCount > 0) {
         int less = small[--smallCount];
         int more = large[--largeCount];
@@ -1187,11 +1363,17 @@ void initializeAliasTable(double *probs, int N, AliasTableEntry *aliasTable) {
             large[largeCount++] = more;
     }
 
-    while (largeCount > 0)
-        aliasTable[large[--largeCount]].prob = 1.0;
+    while (largeCount > 0) {
+        int idx = large[--largeCount];
+        aliasTable[idx].prob = 1.0;
+        aliasTable[idx].alias = idx;
+    }
 
-    while (smallCount > 0)
-        aliasTable[small[--smallCount]].prob = 1.0;
+    while (smallCount > 0) {
+        int idx = small[--smallCount];
+        aliasTable[idx].prob = 1.0;
+        aliasTable[idx].alias = idx;
+    }
 
     free(small);
     free(large);
@@ -1199,8 +1381,13 @@ void initializeAliasTable(double *probs, int N, AliasTableEntry *aliasTable) {
 }
 
 int sampleAliasMethod(AliasTableEntry *aliasTable, int N) {
-    double r = (double)rand() / RAND_MAX * N;
+    double u = ((double)rand()) / ((double)RAND_MAX + 1.0);
+    double r = u * N;
+
     int idx = (int)r;
+    if (idx < 0) idx = 0;
+    if (idx >= N) idx = N - 1;
+
     double prob = r - idx;
 
     if (prob < aliasTable[idx].prob)
@@ -1208,84 +1395,8 @@ int sampleAliasMethod(AliasTableEntry *aliasTable, int N) {
     else
         return aliasTable[idx].alias;
 }
+
 //END Alias method.  
-
-void getModifiedSequenceCompletenessSamplingModelC(int nSeqs, int N, int *S, double *P,
-                                                   int nSample, double *PBs, double beta, int randSeed)
-{
-    if (randSeed != -1) {
-        srand((unsigned int)randSeed);
-    } else {
-        srand((unsigned int)time(NULL));
-    }
-
-    if (nSeqs <= 0 || nSample <= 0) {
-        return;
-    }
-
-    double *seqP = getUniqueSeqProbsPOMM(N, S, P);
-    if (!seqP) return;
-
-    int nU = (int)seqP[0];
-    if (nU <= 0) {
-        free(seqP);
-        return;
-    }
-
-    double *pU = (double *)malloc(nU * sizeof(double));
-    int *counts = (int *)malloc(nU * sizeof(int));
-    AliasTableEntry *aliasTable = (AliasTableEntry *)malloc(nU * sizeof(AliasTableEntry));
-
-    if (!pU || !counts || !aliasTable) {
-        free(seqP);
-        free(pU);
-        free(counts);
-        free(aliasTable);
-        return;
-    }
-
-    for (int i = 0; i < nU; i++) {
-        pU[i] = seqP[i + 1];
-    }
-    free(seqP);
-
-    initializeAliasTable(pU, nU, aliasTable);
-
-    for (int isam = 0; isam < nSample; isam++) {
-        for (int i = 0; i < nU; i++) {
-            counts[i] = 0;
-        }
-
-        for (int iseq = 0; iseq < nSeqs; iseq++) {
-            int k = sampleAliasMethod(aliasTable, nU);
-            counts[k] += 1;
-        }
-
-        double Pc = 0.0;
-        for (int i = 0; i < nU; i++) {
-            if (counts[i] > 0) {
-                Pc += pU[i];
-            }
-        }
-
-        double dd = 0.0;
-        if (Pc > 0.0) {
-            for (int i = 0; i < nU; i++) {
-                if (counts[i] > 0) {
-                    double ps = (double)counts[i] / nSeqs;
-                    double pm = pU[i] / Pc;
-                    dd += 0.5 * fabs(ps - pm);
-                }
-            }
-        }
-
-        PBs[isam] = (1.0 - beta) * Pc + beta * (1.0 - dd);
-    }
-
-    free(pU);
-    free(counts);
-    free(aliasTable);
-}
 
 
 // useful data structures and functionns used in constructNGramPOMMC

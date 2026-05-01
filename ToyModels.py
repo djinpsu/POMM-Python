@@ -7,6 +7,7 @@ from POMM import *
 import pickle
 import os
 import POMM
+import numpy as np
 import matplotlib
 matplotlib.rcParams['font.family'] = 'Times'
 
@@ -34,7 +35,7 @@ def main():
         Syms = {'A':1,'B':2,'C':3,'D':4,'E':5}
         Syms2 = {1:'A',2:'B',3:'C',4:'D',5:'E'}
         # state transition probabilities
-        PO = zeros((N,N))
+        PO = np.zeros((N,N))
         PO[0,2] = 0.5
         PO[0,3] = 0.5
         PO[2,4] = 0.8
@@ -57,7 +58,7 @@ def main():
         Syms = {'A':1,'B':2,'C':3}
         Syms2 = {1:'A',2:'B',3:'C'}
         # state transition probabilities
-        PO = zeros((N,N))
+        PO = np.zeros((N,N))
         PO[0,2] = 0.5
         PO[0,3] = 0.5
         PO[2,3] = 1.0/3
@@ -75,7 +76,7 @@ def main():
         Syms = {'A':1,'B':2,'C':3,'D':4,'E':5}
         Syms2 = {1:'A',2:'B',3:'C',4:'D',5:'E'}
         # state transition probabilities
-        PO = zeros((N,N))
+        PO = np.zeros((N,N))
         PO[0,2] = 0.5
         PO[0,3] = 0.5
         PO[2,4] = 1
@@ -94,7 +95,7 @@ def main():
         Syms = {'A':1,'B':2,'C':3,'D':4,'E':5}
         Syms2 = {1:'A',2:'B',3:'C',4:'D',5:'E'}
         # state transition probabilities
-        PO = zeros((N,N))
+        PO = np.zeros((N,N))
         PO[0,2] = 0.5
         PO[0,3] = 0.5
         PO[2,4] = 0.53
@@ -139,7 +140,7 @@ def main():
         
 
 def plotModel(S,P,finamePDF='gridSearchExampleOrinModel.pdf'):
-    ddr = 'FigsToyModels/'
+    ddr = ''
     # plot the transition diagram
     plotTransitionDiagram(S,P,Pcut=0.01, filenamePDF=ddr+finamePDF, \
             removeUnreachable=False,markedStates=[])
@@ -156,7 +157,7 @@ def fittingPOMMnTot(SO,PO):
     
     stateMergeParam = [1.0, 0.1, 0.1] # merge parameter search, maximum value, min value, stepSize. 
     
-    ddr = 'FigsToyModels/'
+    ddr = ''
     filenameSave = ddr+'ExamplePOMMRes.beta_'+str(betaTotalVariationDistance)+'.dat'    
 
     # sample sequences from the model
@@ -174,7 +175,7 @@ def fittingPOMMnTot(SO,PO):
             osIn = generateSequencePOMM(SO,PO,nTot)
             
             print('N-gram method ...')
-            S, P, pv, PBs, PbT = NGramPOMMSearch(osIn, stateMergeParam=[1.0,0.1,0.1], pValue=pValue, Pcut=Pcut, nProc=nProc, nSample =nSample)
+            S, P, pv, PBs, PbT = NGramPOMMSearch(osIn, stateMergeParam=[1.0,0.1,0.1], pValue=pValue, Pcut=Pcut, nSample =nSample)
                                                                 
             NStates.append(len(S)-2)
             XX.append(nTot)
@@ -192,7 +193,7 @@ def plotExamplePOMMRes(Syms2):
     maxNum = 8
     histMax = 100
     
-    ddr = 'FigsToyModels/'
+    ddr = ''
     
     filenameSave=ddr + 'ExamplePOMMRes.beta_0.2.dat'
 
@@ -201,14 +202,14 @@ def plotExamplePOMMRes(Syms2):
     XX, NStates, SS, PP = pickle.load(fn)
     fn.close()      
 
-    NTot = unique(XX)
-    XX = array(XX)
+    NTot = np.unique(XX)
+    XX = np.array(XX)
     print(XX)
     
     for nTot in NTot:
 
-        iids = where(XX == nTot)[0]
-        NS = array([NStates[kk] for kk in iids])
+        iids = np.where(XX == nTot)[0]
+        NS = np.array([NStates[kk] for kk in iids])
         SSS = [SS[kk] for kk in iids]
         PPP = [PP[kk] for kk in iids]
         
@@ -217,7 +218,7 @@ def plotExamplePOMMRes(Syms2):
         bb = list(range(maxNum))
         cc = [0 for i in range(len(bb))]
         for kk in range(len(bb)):
-            cc[kk] = len(where(NS == kk)[0])
+            cc[kk] = len(np.where(NS == kk)[0])
         print('nTot=',nTot)
         print(' numStates=',bb)
         print(' counts   =',cc)
@@ -232,7 +233,7 @@ def plotExamplePOMMRes(Syms2):
         plt.savefig(ddr+'ExamplePOMMNumStates'+str(nTot)+'.pdf')    
     
         # plot the most probable model. 
-        iic = argmax(cc)
+        iic = np.argmax(cc)
         print(' histogram max at NS = ',bb[iic])
         # select a model to plot. 
         for kk in range(len(NS)):
@@ -251,7 +252,7 @@ def plotExamplePOMMRes(Syms2):
         
 def testMarkovModel(SO,PO,Syms2):
     
-    ddr = 'FigsToyModels/'
+    ddr = ''
     
     nSample=10000
     maxHist = 2200
@@ -272,12 +273,12 @@ def testMarkovModel(SO,PO,Syms2):
                     for sym in osIn[ii]:
                         ss += Syms2[sym]
                     print(ss)
-                    if mod(ii+1,10) == 0:
+                    if np.mod(ii+1,10) == 0:
                         print('\n') 
             # construct Markov model. 
-            syms = list(unique(SO[2:]))
+            syms = list(np.unique(SO[2:]))
             P, S, C = ConstructMarkovModel(osIn,syms,pcut = 0.0)            
-            pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nSample =nSample, nProc=nProc)
+            pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nSample =nSample)
             PVs.append(pv)
             
             if itry == 0:
@@ -309,7 +310,7 @@ def testMarkovModel(SO,PO,Syms2):
     
 def plotMarkovModelTestRes():
     
-    ddr = 'FigsToyModels/'
+    ddr = ''
         
     filenameSave = ddr + 'MarkovModelTest.beta_'+str(betaTotalVariationDistance)+'.dat'
     print('Loading the results from ',filenameSave)
@@ -322,7 +323,7 @@ def plotMarkovModelTestRes():
         plt.subplot(len(NTot),1,ii+1)
         plt.hist(PVsN[ii])
         plt.xlim([0,1])
-        print('nTot=',NTot[ii], ' PV Mean = ', mean(PVsN[ii]),' std=', std(PVsN[ii]))
+        print('nTot=',NTot[ii], ' PV Mean = ', np.mean(PVsN[ii]),' std=', np.std(PVsN[ii]))
     plt.show()              
                     
             
@@ -345,7 +346,7 @@ def testModelComplexityPc(SO,PO):
     
     N = 10
     osIn = generateSequencePOMM(SO,PO,N)
-    syms = unique(SO[2:])
+    syms = np.unique(SO[2:])
     
     PCs = []
     for ns in range(1,5):
@@ -354,7 +355,7 @@ def testModelComplexityPc(SO,PO):
             for i in range(ns):
                 S.append(ss)
         print('S=',S)
-        P, ml, Pc, stdml, ML = BWPOMMCParallel(S,osIn,maxSteps=maxIterBW,nProc=nProc,nRerun=nRerunBW)
+        P, ml, Pc, stdml, ML = BWPOMMCParallel(S,osIn,maxSteps=maxIterBW,nRerun=nRerunBW)
         PCs.append(Pc)
     plt.figure()
     plt.plot(list(range(1,5)),PCs,'o')
@@ -371,7 +372,7 @@ def printSequences2(osIn, Syms2):
         print(ssq)  
         Seqs.append(ssq)    
         kk += 1
-        if mod(kk,10) == 0:
+        if kk % 10 == 0:
             print(' ')
     return Seqs
 
@@ -382,7 +383,7 @@ def nGramModelIllustration(SO,PO, Syms2):
     nSeq = 90
     osIn = generateSequencePOMM(SO,PO,nSeq)
     
-    syllableLabels =[Syms2[ss] for ss in unique(SO[2:])]
+    syllableLabels =[Syms2[ss] for ss in np.unique(SO[2:])]
     print('Syllable Labels = ',syllableLabels)
     
     Seqs = printSequences2(osIn, Syms2)
@@ -421,15 +422,15 @@ def nGramModelIllustration(SO,PO, Syms2):
             ii = jj     
                             
     # construct the transition matrix. 
-    P2 = zeros((len(S2),len(S2)))
+    P2 = np.zeros((len(S2),len(S2)))
     for (ii,jj) in StateTransitionCounts.keys():
         P2[ii,jj] = StateTransitionCounts[(ii,jj)]
     P2[0,0] = 0         
     P2 = normP(P2)
 
     # reorder the states. 
-    P = zeros((len(S2),len(S2)))
-    iids = argsort(S2[2:])
+    P = np.zeros((len(S2),len(S2)))
+    iids = np.argsort(S2[2:])
     S = [S2[kk+2] for kk in iids]
     S = [0,-1] + S
     SnumVis = [StateNumVisits[2:][kk] for kk in iids]
@@ -467,7 +468,7 @@ def nGramModelIllustration(SO,PO, Syms2):
         plotTransitionDiagram(S2,P,filenamePDF=fn,labelStates=1)
         
         # test pv. 
-        pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nSample =10000, nProc=nProc)
+        pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nSample =10000)
         print('pv = ',pv)
         
 def sortPrintUniqueSequences(Seqs,pU):
@@ -497,7 +498,7 @@ def MarkovModelIllustration(SO, PO, Syms2):
     sortPrintUniqueSequences(Seqs,pU)
         
     # construct Markov model. 
-    syms = list(unique(SO[2:]))
+    syms = list(np.unique(SO[2:]))
     P, S, C = ConstructMarkovModel(osIn,syms,pcut = 0.0)    
     print(' ')
     print('All unique sequences of the constrcuted model...')
@@ -511,11 +512,10 @@ def MarkovModelIllustration(SO, PO, Syms2):
     Seqs = printSequences2(osU, Syms2)
     print('Probabilities of Unique sequences given the model')
     sortPrintUniqueSequences(Seqs,PU)
-    
-    Pc =  sum(PU)       # this is the sequence completeness
-    PP = osK/sum(osK)   # this is the emperical transition probabilities. 
-    PU = PU/Pc          # normalize the transition probabilities of the observed sequences on the model.    
-    dd = 0.5 * sum(abs(PU - PP))    
+        
+    Pc = np.sum(PU)
+    PP = osK / np.sum(osK)
+    dd = 0.5 * np.sum(np.abs(PU - PP))    
     Pb = (1 - betaTotalVariationDistance) * Pc + betaTotalVariationDistance * (1 - dd) 
     print('Pc=',round(Pc,3),' dd=',round(dd,3),' Pb=',round(Pb,3))
     
@@ -525,7 +525,9 @@ def MarkovModelIllustration(SO, PO, Syms2):
     Seqs = printSequences2(osGen, Syms2)
     print(' ')
     osU, osK, symU = getUniqueSequences(osGen)
-    pU = [round(osK[i]/sum(osK),3) for i in range(len(osK))]
+
+    pU = [round(osK[i] / np.sum(osK), 3) for i in range(len(osK))]
+    
     print('Unique sequences')
     Seqs = printSequences2(osU, Syms2)
     print('Probabilities of the unique sequences saampled from the model...')
@@ -542,13 +544,13 @@ def MarkovModelIllustration(SO, PO, Syms2):
 # use AIC and BIC criteria for selecting POMM for the toy model.            
 def AICBICPbetaModelInduction(SO, PO, Syms2):
 
-    ddr = 'FigsToyModels/'
+    ddr = ''
     filenameSave = ddr+'AICBICPbetaRes.dat' 
     
         
     NTot = [10,30,60,90]    # number of sequences. 
     iRun = 100              # number of runs. 
-    nSyms = len(unique(SO[2:]))
+    nSyms = len(np.unique(SO[2:]))
         
     print('NumSyms = ',nSyms)
     
@@ -626,7 +628,7 @@ def AICBICPbetaModelInduction(SO, PO, Syms2):
                 # number of parameters
                 K = (N-2)*(N-2) + 2 * (N-2) - N     # number of non-zero elements in the transition matrix. Take into account the transition prorbabilities normalize.   
                 #print('            num parameters K = ',K)
-                P, ml, Pc, stdml, ML = BWPOMMCParallel(S,osIn,nProc=nProc,nRerun=nRerunBW,maxSteps=maxIterBW)
+                P, ml, Pc, stdml, ML = BWPOMMCParallel(S,osIn,nRerun=nRerunBW,maxSteps=maxIterBW)
                 #print('            maximum log likelihood = ',ml)
                 PPs.append(P)
 
@@ -636,16 +638,16 @@ def AICBICPbetaModelInduction(SO, PO, Syms2):
                 #print('            AIC = ',AIC)
 
                 # BIC
-                BIC = log(nTot)*K - 2*ml
+                BIC = np.log(nTot)*K - 2*ml
                 BICSC.append(BIC)
                 #print('            BIC = ',BIC)
                 
                 #Pbeta
-                pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nSample = nSample, nProc=nProc)
+                pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nSample = nSample)
                 PbetaPVs.append(pv)
                 #print('            Pbeta pv=',pv)          
 
-            iid = argmin(AICSC)
+            iid = np.argmin(AICSC)
             S = SS[iid]
             P = PPs[iid]
             print('     AIC Selected model: ',S)
@@ -653,7 +655,7 @@ def AICBICPbetaModelInduction(SO, PO, Syms2):
             SSAIC.append(S)
             PPAIC.append(P)
 
-            iid = argmin(BICSC)
+            iid = np.argmin(BICSC)
             S = SS[iid]
             P = PPs[iid]
             print('     BIC Selected model: ',S)
@@ -661,9 +663,9 @@ def AICBICPbetaModelInduction(SO, PO, Syms2):
             SSBIC.append(S)
             PPBIC.append(P)
             
-            iids = where(array(PbetaPVs) >= 0.05)[0]
+            iids = np.where(np.array(PbetaPVs) >= 0.05)[0]
             Ns = [len(SS[ii]) for ii in iids]
-            jj = argmin(Ns)
+            jj = np.argmin(Ns)
             iid = iids[jj]
             S = SS[iid]
             P = PPs[iid]            
@@ -681,7 +683,7 @@ def AICBICPbetaModelInduction(SO, PO, Syms2):
                             
 def plotAICBICPbetaRes(Syms2):
         
-    ddr = 'FigsToyModels/'
+    ddr = ''
     filenameSave = ddr+'AICBICPbetaRes.dat' 
 
     print('Loading the results from ',filenameSave)
@@ -690,10 +692,10 @@ def plotAICBICPbetaRes(Syms2):
     fn.close()      
     
 
-    NTot = unique(XX)
-    XX = array(XX)
+    NTot = np.unique(XX)
+    XX = np.array(XX)
     print(XX)
-    iids = where(XX == NTot[0])[0]
+    iids = np.where(XX == NTot[0])[0]
 
     minNum = len(Syms2.keys())-1
     maxNum = len(SO)-1
@@ -707,19 +709,19 @@ def plotAICBICPbetaRes(Syms2):
         
         nTot = NTot[ii]
 
-        iids = where(XX == nTot)[0]
+        iids = np.where(XX == nTot)[0]
         
         for iiter in range(3):
             if iiter == 0:
-                NS = array([NStatesPbeta[kk] for kk in iids])
+                NS = np.array([NStatesPbeta[kk] for kk in iids])
                 SSS = [SSPbeta[kk] for kk in iids]
                 PPP = [PPPbeta[kk] for kk in iids]              
             elif iiter == 1:        
-                NS = array([NStatesAIC[kk] for kk in iids])
+                NS = np.array([NStatesAIC[kk] for kk in iids])
                 SSS = [SSAIC[kk] for kk in iids]
                 PPP = [PPAIC[kk] for kk in iids]
             else:
-                NS = array([NStatesBIC[kk] for kk in iids])
+                NS = np.array([NStatesBIC[kk] for kk in iids])
                 SSS = [SSBIC[kk] for kk in iids]
                 PPP = [PPBIC[kk] for kk in iids]
                     
@@ -728,7 +730,7 @@ def plotAICBICPbetaRes(Syms2):
             bb = list(range(maxNum))
             cc = [0 for i in range(len(bb))]
             for kk in range(len(bb)):
-                cc[kk] = len(where(NS == kk)[0])
+                cc[kk] = len(np.where(NS == kk)[0])
             print('nTot=',nTot)
             print(' numStates=',bb)
             print(' counts   =',cc)
@@ -750,12 +752,12 @@ def plotAICBICPbetaRes(Syms2):
 
 def testBetaValues(SO, PO, Syms2):
 
-    ddr = 'FigsToyModels/'
+    ddr = ''
     filenameSave = ddr+'POMMTestingBetaChoiceRes.dat'   
     
     NTot = [10,30,90]       # number of sequences
     nRuns = 100             # number of runs. 
-    nSyms = len(unique(SO[2:]))
+    nSyms = len(np.unique(SO[2:]))
     
     BetaValues = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0] 
     
@@ -785,11 +787,7 @@ def testBetaValues(SO, PO, Syms2):
                 osIn = generateSequencePOMM(SO,PO,nTot)
                 
                 print('N-gram method ...')
-                S, P, pv, PBs, PbT, Pc = NGramPOMMSearch(osIn,nRerun=nRerunBW,pValue=pValue,nProc=nProc,nSample =nSample)
-                
-                # simplify by cutting connections       
-                #S, P, pv, PBs, PbT  = MinPOMMSimp(S,osIn,minP = 0,nProc=nProc,nRerun=nRerunBW,pValue=pValue, nSample=nSample, factors=[0.5])   
-                #print('After simplification pv=',pv)
+                S, P, pv, PBs, PbT, Pc = NGramPOMMSearch(osIn,nRerun=nRerunBW,pValue=pValue,nSample =nSample)
                 
                 print(' S=',S)
                 print(' Num States = ',len(S)-2)
@@ -808,16 +806,16 @@ def testBetaValues(SO, PO, Syms2):
 # plot testing          
 def plotTestBetaValues():
     
-    ddr = 'FigsToyModels/'
+    ddr = ''
     filenameSave = ddr+'POMMTestingBetaChoiceRes.dat'   
     
     fn = open(filenameSave,'rb')
     print('Reading results from ',filenameSave)
     XX, NStates, SS, PP, Beta = pickle.load(fn)
-    NTot = unique(XX)
-    XX = array(XX)
-    Beta = array(Beta)
-    NStates = array(NStates)
+    NTot = np.unique(XX)
+    XX = np.array(XX)
+    Beta = np.array(Beta)
+    NStates = np.array(NStates)
     NSmin = int(NStates.min())
     NSmax = int(NStates.max())
     
@@ -826,21 +824,21 @@ def plotTestBetaValues():
     plt.figure(figsize=(5,3))
     kk = 0
     for nTot in NTot:
-        iids = where(XX == nTot)[0]
+        iids = np.where(XX == nTot)[0]
         BBs = Beta[iids]
         NNs = NStates[iids]
         Medians = []
         Ranges = [[],[]]
-        Bs = unique(BBs)
+        Bs = np.unique(BBs)
         for beta in Bs:
-            iids2 = where(BBs == beta)
+            iids2 = np.where(BBs == beta)
             nns = NNs[iids2]
-            mm = median(nns)
+            mm = np.median(nns)
             Medians.append(mm)
-            Ranges[0].append(mm-min(nns))
-            Ranges[1].append(max(nns)-mm)
+            Ranges[0].append(mm-np.min(nns))
+            Ranges[1].append(np.max(nns)-mm)
         #plt.errorbar(Bs, Means, yerr=Ranges, fmt='o', ecolor='black', capsize=5, linestyle='-', color='black')
-        ikk = int(mod(kk,len(ccs)))
+        ikk = int(np.mod(kk,len(ccs)))
         cc = ccs[ikk]
         kk += 1
         plt.errorbar(Bs, Medians, fmt='o', ecolor=cc, capsize=1, linestyle='-', color=cc,linewidth=0.5)

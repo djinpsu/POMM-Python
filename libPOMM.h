@@ -124,56 +124,69 @@ struct DLinkedList {
 void AddNodeToHeadD(DLinkedList **list, Node *node);
 void DeleteListD(DLinkedList **list);
 
-//find all unique state seqeunces given the transition probability. 
-void FindUniqueStateSequencesC(int N, double *P, LinkedList **ends, LinkedList **allNodes, double PSsmall);
-//find all unique sequences given the state and transition probabilities. 
-void FindUniqueSequencesC(int N, int *S, double *P, int *Ns, double **Ps, LinkedList ***Seqs, double PSsmall);
-
-
-//data structure for generating sequences and computing Pb.
-//the unique sequences are stored in a tree structure. The leafs of the tree contain the last sym in the seq 
-//and how many times the sequence generated. 
-typedef struct LinkedListNodeSym LinkedListNodeSym;
-typedef struct NodeSym NodeSym;
-struct NodeSym {
-	NodeSym *parent;		//parent of this node. 
-	LinkedListNodeSym *daughterNodeSym;	//list of all nodes going from this node. 
-	int sym; 		//symbol associated with this node
-	int count;		//numbe of times the node is visited.
-};
-struct LinkedListNodeSym {
-	NodeSym *node;
-	LinkedListNodeSym *next;
-};
-//Add sym to the tree structure. Returns the pointer to the node. 
-NodeSym *AddSym(NodeSym *parent, int sym, LinkedListNodeSym *allNodes);
-void DeleteLinkedListNodeSym(LinkedListNodeSym *list); 
-
 //compute the sequennce probability. 
 //seq starts with 0 and ends with -1. 
-double computeSeqProbPOMM(int N, int *S, double *P, int ns, int *seq);
+// compute the sequence probability using CSR transition matrix P.
+// start state is 0 and end state is 1.
+// seq[0] should correspond to start symbol/state condition,
+// seq[ns-1] should correspond to end condition.
+double computeSeqProbPOMM_CSR(
+    int N,
+    int *S,
+    int *row_ptr,
+    int *col_ind,
+    double *Pval,
+    int ns,
+    int *seq
+);
 
-//find modified sequence completeness distribution. the size of set is nSeqs
-void getModifiedSequenceCompletenessSamplingModelC(int nSeqs, int N, int *S, double *P, int nSample, double *PBs, double beta, int randSeed);
+typedef struct {
+    int N;
+    int nnz;
+    int *rowPtr;
+    int *colInd;
+    double *val;
+} CSRMatrix;
+
+void FindUniqueStateSequencesC_CSR(
+    CSRMatrix *A,
+    LinkedList **ends,
+    LinkedList **allNodes,
+    double PSsmall
+);
+
+void FindUniqueSequencesC_CSR(
+    int N,
+    int *S,
+    CSRMatrix *A,
+    int *Ns,
+    double **Ps,
+    LinkedList ***Seqs,
+    double PSsmall
+);
+
 
 //find all unique sequences and probabilities up to a tolerance. 
 //returns number of unique sequences. 
 //pointer seqP will be pointing to the transition probabilities of the unique sequences
 //seqP[0] is the sequence length. 
-double *getUniqueSeqProbsPOMM(int N, int *S, double *P); 
+double *getUniqueSeqProbsPOMM_CSR(int N, int *S, CSRMatrix *A);
 
-typedef struct NodeD NodeD;
-struct NodeD {
-	NodeD *parent; //pointer to the parent.
-	NodeD *next; 	//pointer to the next 
-	int ii;	  		//state id. 
-	double P;	  	//probability of the state sequence to this point. 
-};
-//double linked list of NodeDs 
-void AddNodeToHeadNodeD(NodeD **HeadNode, NodeD *node);
-void DeleteLinkNodeD(NodeD **HeadNode);
-void DeleteNodeD(NodeD **HeadNode, NodeD *node);
-int LengthLinkNodeD(NodeD **HeadNode);
+//find modified sequence completeness distribution. the size of set is nSeqs, P is in the compressed CSR format. 
+void getModifiedSequenceCompletenessSamplingModelCSR_C(
+    int nSeqs,
+    int N,
+    int *S,
+    int nnz,
+    int *rowPtr,    // CSR row pointer, length N + 1
+    int *colInd,    // CSR column indices, length nnz
+    double *val,    // CSR nonzero values, length nnz    
+    int nSample,
+    double *PBs,
+    double beta,
+    int randSeed
+);
+
 
 //free memory pointed by pt double, called from Python using CDLL. 
 void freeArray(double *pt);
@@ -205,6 +218,7 @@ typedef struct {
  
 */ 
 ThreeArrays* constructNGramPOMMC(int nSeq, int *osIn, int ng);
+void freeThreeArrays(ThreeArrays *pt);
 
 
 #endif

@@ -1,6 +1,7 @@
 '''
  This python library contains functions for deriving POMM from observed seqeunces
  Useful concepts
+
    state vector: specifies symbols associated with the states.
        The first is the start state 0, and the second is the end state -1, and the results are the other states. 
        for example, S = [0, -1, 'A', 'B', 'A'] 
@@ -22,26 +23,8 @@
    
 '''
 
-place='MacAir'  # O, office, MC, mac, other group machines, G, MacAir, macbook air
-#place='G'  # O, office, MC, mac, other group machines, G, MacAir, macbook air
-#place=''
-
-if place == 'MacAir':
-    dirCodes = '/Users/dzj2/projects/POMMPython/'       # mac directory for the c library. 
-    nProc = 2   
-if place == 'MC':
-    dirCodes = '/Users/dezhejin/projects/POMMPython/'       # mac directory for the c library. 
-    nProc = 8
-elif place == 'O':
-    dirCodes = '/home/dzj2/projects/POMMPython/'            # Office machine directory for the c library. 
-    nProc = 18
-elif place == 'G':                                          # hodgkin, neuron 
-    dirCodes = '/home/dzj2/projects/POMMPython/'    
-    nProc = 40
-
-
 from subprocess import call
-from numpy import *
+import numpy as np
 from numpy.random import rand, seed
 import random
 from datetime import datetime
@@ -66,15 +49,21 @@ from sklearn.utils.extmath import randomized_svd
 from scipy.sparse import csr_matrix
 from scipy.cluster.hierarchy import linkage, fcluster, dendrogram
 from scipy.spatial.distance import pdist
+from scipy import sparse
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
+# Number of available CPUs
+
+nCPU = os.cpu_count() or 1
+nProc = nCPU - 1 if nCPU > 1 else 1
 
 #import rpy2.robjects as robjects   # for Fisher exact test
 #import rpy2.robjects.numpy2ri
 #rpy2.robjects.numpy2ri.activate()
 
-
 # load the C program library. 
-lib = ctypes.CDLL(dirCodes+'libPOMM.so')
+lib = ctypes.CDLL(str(Path(__file__).resolve().parent / "libPOMM.so"))
 
 # PARAMETERS
 betaTotalVariationDistance = 0.2    # the factor for modifying the sequence completeness adding the total 
@@ -100,12 +89,11 @@ pTolence = 1e-6                     # smallest transition probability.
         Successively build n-gram transition models, and test for Pbeta significance.
         Then merge states. 
    
-        S, P, pv, PBs, PbT = NGramPOMMSearch(osIn, pValue=0.05, Pcut=0.001, stateMergeParam=[1, 0.1, 0.1], nProc=2, nSample = 10000, ngramStart = 1, fnSave=''):
+        S, P, pv, PBs, PbT = NGramPOMMSearch(osIn, pValue=0.05, Pcut=0.001, stateMergeParam=[1, 0.1, 0.1], nSample = 10000, ngramStart = 1, fnSave=''):
 
         Inputs: 
         
         osIn    - list of observed sequences. Symbols must be 1,2,...,n, where n is the number of symbols. 
-        nProc   - number of processes used for BW
         pValue  - p-value for accepting the POMM using Pc. 
         nSample - number of samples for calculating pValue. 
         ngramStart - starting ngram, 1, MARKOV, 2, second oreder Markov, etc.
@@ -123,13 +111,12 @@ pTolence = 1e-6                     # smallest transition probability.
         PBs - PBs sampled from the final model
         PbT - Pb of the observed sequences on the final model
 
-    MinPOMMSimpDeleteStates(S,osIn, nProc = 2, nRerun = 50, pValue=pValue, nSample=10000, fnSave='')
+    MinPOMMSimpDeleteStates(S,osIn, nRerun = 50, pValue=pValue, nSample=10000, fnSave='')
         
          Simplify by deleting states and making sure that the maximum likelihood remains within bound. 
          Input parameters:
             S - initial POMM
             osIn - observed sequences
-            nProc - number of processes for parallel computing in BWPOMMFun
             nRerun - number of times B-W is run with different seeds. 
          Return S, P, Pc    
             S - state vector
@@ -140,7 +127,7 @@ pTolence = 1e-6                     # smallest transition probability.
         
    Some other usefyl functions     
 
-       getPVSampledSeqsPOMM(S, P, osIn,nSample = 10000, nProc=2)
+       getPVSampledSeqsPOMM(S, P, osIn,nSample = 10000)
 
            get the p-value of the observed seqeunces against the Pb of the sampled sequences for a given POMM
            This method is through generating sequences from POMM
@@ -149,7 +136,6 @@ pTolence = 1e-6                     # smallest transition probability.
                P, transition probabilities
                 osIn, observed sequence
                 nSample, number of samples, default 10000
-                nProc, number of processors used
             Returns:
                 pv, p-value of the observed sequence on the model.
                 PBs, modified sequence completeness sampled
@@ -166,7 +152,7 @@ pTolence = 1e-6                     # smallest transition probability.
                 symU, symbols.
      
      
-        BWPOMMCParallel(S,osInO,maxSteps=5000,pTol=1e-6, nRerun=100, nProc = 2)
+        BWPOMMCParallel(S,osInO,maxSteps=5000,pTol=1e-6, nRerun=100)
 
             Parallel version of BWPOMM, calling C function BWPOMMC from libPOMM.h   
             Inputs:
@@ -175,7 +161,6 @@ pTolence = 1e-6                     # smallest transition probability.
                 maxSteps, maximum number of steps for updating the transition probabilities
                 pTol, tolerance for the transition probabilities
                 nRerun, number of times the algorithm is run. 
-                nProc, number of processors used. 
             Returns:
                 P, computed transition matrix
                 MLmax, maximum log likelihood
@@ -414,7 +399,7 @@ pTolence = 1e-6                     # smallest transition probability.
                 PSteps, nStep x (nSym+1) matrix. PSteps[:,0] is the probability of ending at the steps. 
      
      
-        MergeStatesRecalculateP(S,P,mergeInds,osT,maxIterBW=1000,nRerunBW=100,nProc=2)
+        MergeStatesRecalculateP(S,P,mergeInds,osT,maxIterBW=1000,nRerunBW=100)
 
             merge states, keep the state vector structure but change the transition probability matrix
             merge state ii to jj. The list is given in mergeInds
@@ -426,12 +411,12 @@ pTolence = 1e-6                     # smallest transition probability.
                 S - state vector
                 P - transitinn probabilities
                 mergeInds - list of pair of indices (ii,jj), merging state ii to state jj. 
-                maxIterBW, nRerunBW, nProc, parameters for BW algorithm. 
+                maxIterBW, nRerunBW, parameters for BW algorithm. 
             Return:
                 P2 - transition matrix. 
      
      
-        generateSequenceSamples(S,P,N,nSample=nSample,nProc=nProc)
+        generateSequenceSamples(S,P,N,nSample=nSample)
 
             generegate nSample sets of N sequences from the POMM. 
             Inputs:
@@ -439,18 +424,16 @@ pTolence = 1e-6                     # smallest transition probability.
                 P - transition matrix
                 N - number of sequences in each set.
                 nSample - number of sets sampled. 
-                nProc - number of processes used. 
             Return:
                 osSampled - sampled sets of sequences
      
-        computePsStatsInSamples(osTSamples,ss,Ps0,nProc=nProc)  
+        computePsStatsInSamples(osTSamples,ss,Ps0)  
 
             compute the Ps of subsequence ss in the sampled seqeunces, return confidence intervals. 
             Inputs:
                 osTSamples - sampled sequences
                 ss - subsequence
                 Ps0 - Ps of the subsequence in the observed set
-                nProc - number of process used
             Returns:
                 pv - p-value of the observed Ps0 being larger than the smapled. 
                 pL - lower bound of Ps in 95% confidence interval
@@ -458,13 +441,12 @@ pTolence = 1e-6                     # smallest transition probability.
                 pMedian - median value of the distribution
      
      
-        computeNumTasksProc(nTot, nProc = 2)
+        computeNumTasksProc(nTot)
 
             blance load on multiple process, returns arrar of number of computations each process should handle. 
             usefule wen nStask is not multiples of nProc
             Inputs:
                 nTot - total number of tasks
-                nProc - number of processors
             returns
                 NS - list of length nProc, number of tasks assinged to each processor
      
@@ -521,7 +503,7 @@ pTolence = 1e-6                     # smallest transition probability.
 
 """
 
-def NGramPOMMSearch(osIn, pValue=0.05, stateMergeParam=[1, 0.1, 0.1], Pcut=0.001, nProc=2, nSample = 10000, ngramStart = 1, fnSave=''):
+def NGramPOMMSearch(osIn, pValue=0.05, stateMergeParam=[1, 0.1, 0.1], Pcut=0.001, nSample = 10000, ngramStart = 1, fnSave=''):
  
     print('Constructing POMM with nGram transition diagram...')
     flag = 0
@@ -534,13 +516,10 @@ def NGramPOMMSearch(osIn, pValue=0.05, stateMergeParam=[1, 0.1, 0.1], Pcut=0.001
         P = normP(P, Pcut = Pcut)
                     
         # test the statsicial signifance. 
-        pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nSample=nSample, nProc=nProc)
+        pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nSample=nSample)
         print(' Pb sampled range=(',round(PBs.min(),3),round(PBs.max(),3),') seq Pb=', round(PbT,3))
             
         print(' S=',S)
-
-        if fnSave != '':
-            saveNGramPOMMSearchRes(S,P,ng,pv,PbT,SnumVis,fnSave)
 
         if pv > pValue:
             print(' Accepted pv=',round(pv,3))
@@ -554,49 +533,81 @@ def NGramPOMMSearch(osIn, pValue=0.05, stateMergeParam=[1, 0.1, 0.1], Pcut=0.001
         Pc = 0
         return S, P, pv, PBs, PbT
  
-    pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nSample=nSample, nProc=nProc)
+    pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nSample=nSample)
     print(f'Ngram model pv={pv:0.4f}')
     
     # get all unique sequences of length ng
     seqDict, symU = getUniqueSequencesByStartSymbol(osIn, ng+1)
 
 
-    # Precondition: PTest[ii, jj] == 0 and PTest[jj, ii] == 0
-    # (no transitions between states sharing the same symbol)
-    def mergeStateJJtoII(ii, jj, N, SnumVisTestIn, PTestIn):  # merge state jj to ii
+    def mergeStateJJtoII(ii, jj, N, SnumVisTestIn, PTestIn):
+        """
+        Merge state jj into state ii.
+
+        Correctly handles transitions:
+            ii -> jj
+            jj -> ii
+            jj -> jj
+        by folding them into the new self-transition ii -> ii.
+
+        Assumes ii and jj have the same emitted symbol.
+        """
+
         print(f'    merging states {ii}, {jj}')
-        
+
         SnumVisTest = SnumVisTestIn.copy()
+        Pold = PTestIn.copy()
         PTest = PTestIn.copy()
 
         wi = SnumVisTest[ii]
         wj = SnumVisTest[jj]
         w = wi + wj
 
+        if w > 0:
+            ai = wi / w
+            aj = wj / w
+        else:
+            # fallback if both states have zero visitation count
+            ai = 0.5
+            aj = 0.5
+
+        # 1. Merge outgoing row jj into row ii.
+        # For ordinary destination states k not in {ii, jj}.
         for kk in range(N):
             if kk == ii or kk == jj:
                 continue
 
-            if w == 0:
-                PTest[ii, kk] = 0.0
-                PTest[jj, kk] = 0.0
-                continue
+            PTest[ii, kk] = ai * Pold[ii, kk] + aj * Pold[jj, kk]
 
-            PTest[ii, kk] = (wi / w) * PTest[ii, kk] + (wj / w) * PTest[jj, kk]
-            PTest[jj, kk] = 0.0
+        # 2. Correct merged self-transition.
+        # Any transition from {ii, jj} to {ii, jj} becomes ii -> ii.
+        PTest[ii, ii] = (
+            ai * (Pold[ii, ii] + Pold[ii, jj])
+            + aj * (Pold[jj, ii] + Pold[jj, jj])
+        )
 
-        SnumVisTest[ii] += SnumVisTest[jj]
-        SnumVisTest[jj] = 0
-
+        # 3. Merge incoming column jj into column ii.
+        # For source states k not in {ii, jj}.
         for kk in range(N):
             if kk == ii or kk == jj:
                 continue
-            PTest[kk, ii] = PTest[kk, ii] + PTest[kk, jj]
+
+            PTest[kk, ii] = Pold[kk, ii] + Pold[kk, jj]
             PTest[kk, jj] = 0.0
 
+        # 4. Remove transitions into jj from ii and jj.
         PTest[ii, jj] = 0.0
+
+        # 5. Deactivate jj.
+        # You currently redirect deleted state jj to end state.
+        # This is okay if removeUnreachableStates will remove jj later.
         PTest[jj, :] = 0.0
+        PTest[:, jj] = 0.0
         PTest[jj, 1] = 1.0
+
+        # 6. Update visitation count.
+        SnumVisTest[ii] = wi + wj
+        SnumVisTest[jj] = 0
 
         return SnumVisTest, PTest
 
@@ -605,7 +616,7 @@ def NGramPOMMSearch(osIn, pValue=0.05, stateMergeParam=[1, 0.1, 0.1], Pcut=0.001
     for sm in symU:
 
         N = len(S)
-        iid = where(sm == array(S))[0]
+        iid = np.where(sm == np.array(S))[0]
 
         if len(iid) <= 1:
             continue
@@ -622,7 +633,7 @@ def NGramPOMMSearch(osIn, pValue=0.05, stateMergeParam=[1, 0.1, 0.1], Pcut=0.001
 
         PTest = normP(PTest)
 
-        pv, PBs, PbT = getPVSampledSeqsPOMM(S, PTest, osIn, nSample=nSample, nProc=nProc)
+        pv, PBs, PbT = getPVSampledSeqsPOMM(S, PTest, osIn, nSample=nSample)
         print(f'     pv=', pv, ' Pb sampled range=(', round(PBs.min(), 3), round(PBs.max(), 3), ') seq Pb=', round(PbT, 3))
 
         if pv >= pValue:
@@ -660,7 +671,7 @@ def NGramPOMMSearch(osIn, pValue=0.05, stateMergeParam=[1, 0.1, 0.1], Pcut=0.001
 
         for sm in symU:
             N = len(S)
-            iid = where(sm == array(S))[0]
+            iid = np.where(sm == np.array(S))[0]
 
             if len(iid) <= 1:
                 continue
@@ -672,7 +683,7 @@ def NGramPOMMSearch(osIn, pValue=0.05, stateMergeParam=[1, 0.1, 0.1], Pcut=0.001
             if len(uSeqs) == 0:
                 continue
 
-            Pseqs = zeros((len(iid), len(uSeqs)))
+            Pseqs = np.zeros((len(iid), len(uSeqs)))
             for i, ii in enumerate(iid):
                 Pstart = P.copy()
                 Pstart[0, :] = 0.0
@@ -695,7 +706,7 @@ def NGramPOMMSearch(osIn, pValue=0.05, stateMergeParam=[1, 0.1, 0.1], Pcut=0.001
             print(" cluster labels =", labels)
 
             for ll in set(labels):
-                kkd = where(array(labels) == ll)[0]
+                kkd = np.where(np.array(labels) == ll)[0]
                 if len(kkd) < 2:
                     continue
 
@@ -705,7 +716,7 @@ def NGramPOMMSearch(osIn, pValue=0.05, stateMergeParam=[1, 0.1, 0.1], Pcut=0.001
                     SnumVisTest, PTest = mergeStateJJtoII(ii, jj, N, SnumVisTest, PTest)
 
         PTest = normP(PTest, Pcut=Pcut)
-        pv, PBs, PbT = getPVSampledSeqsPOMM(S, PTest, osIn, nSample=nSample, nProc=nProc)
+        pv, PBs, PbT = getPVSampledSeqsPOMM(S, PTest, osIn, nSample=nSample)
         print(f'     pv=', pv, ' Pb sampled range=(', round(PBs.min(), 3), round(PBs.max(), 3), ') seq Pb=', round(PbT, 3))
 
         if pv >= pValue:
@@ -713,16 +724,14 @@ def NGramPOMMSearch(osIn, pValue=0.05, stateMergeParam=[1, 0.1, 0.1], Pcut=0.001
             S, P, iids = removeUnreachableStates(S, PTest, returniid=True)
             SnumVis = [SnumVisTest[k] for k in iids]
 
-            if fnSave != '':
-                saveNGramPOMMSearchRes(S_acc, P_acc, ng, pv, PbT, SnumVis_acc, fnSave)
             break
                    
-    pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nSample=nSample, nProc=nProc)
+    pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nSample=nSample)
     print(f'\nAfter merging sequence prob based merging, pv=', pv, ' Pb sampled range=(', round(PBs.min(), 3), round(PBs.max(), 3), ') seq Pb=', round(PbT, 3),'\n')
      
     # test deleting state through grids.
     #print('Further simplification with state deletion method...') 
-    S, P, pv, PBs, PbT, Pc = MinPOMMSimpDeleteStates(S, osIn, nProc = nProc, nRerun = BWRerun, pValue=pValue, nSample=nSample)
+    S, P, pv, PBs, PbT, Pc = MinPOMMSimpDeleteStates(S, osIn, nRerun = BWRerun, pValue=pValue, nSample=nSample)
     print(f'    After deleting states pv={pv:0.4f}')
 
     # final model.     
@@ -749,8 +758,8 @@ def computeMostProbableStateSequence(S,P,seq):
     N = len(S)
     T = len(sseq)
     
-    PS = zeros((N,T))                   # probability of the the state sequence at state i time step t. 
-    SS = zeros((N,T)).astype('int')     # the state selected for time t for state i. 
+    PS = np.zeros((N,T))                   # probability of the the state sequence at state i time step t. 
+    SS = np.zeros((N,T)).astype('int')     # the state selected for time t for state i. 
     PS[0,0] = 1         # starting from the start state 
     
     # forward pass
@@ -758,7 +767,7 @@ def computeMostProbableStateSequence(S,P,seq):
         for jj in range(N):
             if S[jj] != sseq[t]:    # the state does not have the right symbol at this time point. 
                 continue    
-            imax = argmax(PS[:,t-1] * P[:,jj])
+            imax = np.argmax(PS[:,t-1] * P[:,jj])
             SS[jj,t] = imax
             PS[jj,t] = PS[imax,t-1] * P[imax,jj]
         
@@ -769,179 +778,138 @@ def computeMostProbableStateSequence(S,P,seq):
         stateSeq = [SS[imax,t]]+stateSeq
     return stateSeq, prob   
     
-def testComputeMostProbableStateSequence():
-    S = [0,-1,1,2,3,3,4,5]
-    N = len(S)
-    P = zeros((N,N))
-    P[0,2] = 0.5
-    P[0,3] = 0.5
-    P[2,4] = 1
-    P[3,5] = 1
-    P[4,6] = 0.6
-    P[4,7] = 0.4
-    P[5,7] = 0.6
-    P[5,6] = 0.4
-    P[6,1] = 1
-    P[7,1] = 1  
-    
-    print('S=',S)
-    printP(P)
 
-    for itest in range(2):
-        if itest == 0:
-            seq = [1,3,4]
-            esq = [2,4,6]
-            epr = 0.5 * 0.6
-        else:
-            seq = [2,3,5]
-            esq = [3,5,7]
-            epr = 0.5 * 0.6
-        stateSeq, prob = computeMostProbableStateSequence(S,P,seq)
-        print(' ')
-        print('seq =',seq)
-        print('ssq =',stateSeq)
-        print('expected state sequence = ',esq)
-        print('prb =',prob,' expected=',epr)
-        
+lib.computeSeqProbPOMM_CSR.argtypes = [
+    ctypes.c_int,                         # N
+    ctypes.POINTER(ctypes.c_int),         # S
+    ctypes.POINTER(ctypes.c_int),         # row_ptr
+    ctypes.POINTER(ctypes.c_int),         # col_ind
+    ctypes.POINTER(ctypes.c_double),      # Pval
+    ctypes.c_int,                         # ns
+    ctypes.POINTER(ctypes.c_int),         # seq
+]
 
-# compute the probability of a single sequence using C function. 
-def computeSeqProbPOMMC(N,S,P,seq,PU,ii):
-    S = array(S).astype(int32)
-    seq = array([0]+list(seq)+[-1]).astype(int32)
+lib.computeSeqProbPOMM_CSR.restype = ctypes.c_double
+
+def computeSeqProbPOMMC(N, S, P, seq, PU, ii, Pcut=0.0):
+    """
+    Compute probability of a single sequence using CSR C function.
+
+    Original dense P is converted to CSR before calling C.
+    """
+
+    S = np.asarray(S, dtype=np.int32)
+    seq = np.asarray([0] + list(seq) + [-1], dtype=np.int32)
     nSeq = len(seq)
-    P = array(P)
     
-    lib.computeSeqProbPOMM.argtypes = [
-        ctypes.c_long, 
-        ctypes.POINTER(ctypes.c_long),
-        ctypes.POINTER(ctypes.c_double),
-        ctypes.c_long,
-        ctypes.POINTER(ctypes.c_long)
-    ]
+    P_csr = sparse.csr_matrix(P, dtype=np.float64)
+    # Clean CSR representation
+    P_csr.sum_duplicates()
+    P_csr.eliminate_zeros()
+    P_csr.sort_indices()
+
+    rowPtr = np.ascontiguousarray(P_csr.indptr, dtype=np.int32)
+    colInd = np.ascontiguousarray(P_csr.indices, dtype=np.int32)
+    val = np.ascontiguousarray(P_csr.data, dtype=np.float64)
     
-    lib.computeSeqProbPOMM.restype = ctypes.c_double
-    
-    prob = lib.computeSeqProbPOMM(
-        ctypes.c_long(N),
-        S.ctypes.data_as(ctypes.POINTER(ctypes.c_long)), 
-        P.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
-        ctypes.c_long(nSeq),
-        seq.ctypes.data_as(ctypes.POINTER(ctypes.c_long))
+    prob = lib.computeSeqProbPOMM_CSR(
+        ctypes.c_int(N),
+        S.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+        rowPtr.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+        colInd.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+        val.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        ctypes.c_int(nSeq),
+        seq.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
     )
-    
+
     PU[ii] = prob
     return prob
-    
-# test program
-def testComputeSeqProbPOMMC():
-    
-    iModel = 1
 
-    if iModel == 1:
-        S0 = [0,-1,'A','B','C','C','A','D','E']
-        N = len(S0)
-        # convert to numberic symbols. 
-        SymsRev = {'A':1,'B':2,'C':3,'D':4,'E':5}
-        Syms2 = {1:'A',2:'B',3:'C',4:'D',5:'E'}
-        # state transition probabilities
-        P = zeros((N,N))
-        P[0,2] = 0.5
-        P[0,3] = 0.5
-        P[2,4] = 0.8
-        P[2,1] = 0.2
-        P[3,5] = 0.5
-        P[3,6] = 0.5
-        P[4,7] = 0.9
-        P[4,8] = 0.1        
-        P[5,7] = 0.2
-        P[5,8] = 0.8
-        P[6,8] = 0.5
-        P[6,1] = 0.5
-        P[7,1] = 1.0
-        P[8,1] = 1.0    
-    else:
-        S0 = [0,-1,'A','B','C','C','D','E']
-        N = len(S0)
-        # convert to numberic symbols. 
-        SymsRev = {'A':1,'B':2,'C':3,'D':4,'E':5}
-        Syms2 = {1:'A',2:'B',3:'C',4:'D',5:'E'}
-        # state transition probabilities
-        P = zeros((N,N))
-        P[0,2] = 0.5
-        P[0,3] = 0.5
-        P[2,4] = 1.0
-        P[3,5] = 1.0
-        P[4,6] = 0.8
-        P[4,7] = 0.2
-        P[5,6] = 0.2
-        P[5,7] = 0.8
-        P[6,1] = 1.0
-        P[7,1] = 1.0    
-        
-    print(P)
-    
-    S = [SymsRev[ss] for ss in S0[2:]]
-    S = [0,-1] +S
-    print(S)
+def computeSeqProbPOMMC_CSR_arrays(N, S, rowPtr, colInd, val, seq, PU=None, ii=None):
+    seq = np.asarray([0] + list(seq) + [-1], dtype=np.int32)
+    nSeq = len(seq)
 
-    # generate sequences
-    nTot = 90
-    nSample = 10000
+    prob = lib.computeSeqProbPOMM_CSR(
+        ctypes.c_int(N),
+        S.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+        rowPtr.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+        colInd.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+        val.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        ctypes.c_int(nSeq),
+        seq.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+    )
 
-    seqs = generateSequencePOMM(S0,P,nTot)
-    syllableLabels = list(SymsRev.keys())
-    osIn, repeatNumSeqs, symsNumeric = getNumericalSequencesNonRepeat(seqs,syllableLabels)
-    
-    osU, osK, symU = getUniqueSequences(osIn)
-    print(' Computing PU...')
-    
-    N = len(S)
-    PU = zeros(N).astype(float64)
+    if PU is not None and ii is not None:
+        PU[ii] = prob
 
-    for seq in osU:
-        print('seq=',seq)
-        prob = computeSeqProbPOMMC(N,S,P,seq,PU,0)
-        print('C code prob=',prob)
-        os2, PU2 = getSequenceProbModel(S, P, osIn, [seq])
-        print('Python prob=',PU2[0])
-        print(' ') 
-    
-    computeModifiedSequenceCompleteness(S,P,osIn)
-    
+    return prob    
 
 # compute the modified sequence completeness
-def computeModifiedSequenceCompleteness(S,P,osT):
+def computeModifiedSequenceCompleteness(S, P, osT):
     print(' Getting unique sequences...')
     osU, osK, symU = getUniqueSequences(osT)
-    print(' Computing PU...')
-    
-    N = len(S)
-    PU = zeros(len(osU)).astype(float64)
-    
-    # List to hold the thread objects
-    threads = []
-    # Creating and starting threads
-    for i, seq in enumerate(osU):
-        thread = threading.Thread(target=computeSeqProbPOMMC, args=(N,S,P,seq,PU,i))
-        threads.append(thread)
-        thread.start()
-    # Wait for all threads to complete
-    for thread in threads:
-        thread.join()
-    
-    #osU, PU = getSequenceProbModel(S, P, osT, osU) 
-    
-    print(' Done.') 
 
-    
-    Pc =  sum(PU)       # this is the sequence completeness
-    PP = osK/sum(osK)   # this is the emperical transition probabilities. 
-    if Pc < 1e-5:       # extremely bad model. 
-        return 0.0  
-    PU = PU/Pc          # normalize the transition probabilities of the observed sequences on the model.    
-    dd = 0.5 * sum(abs(PU - PP))    
-    Pb = (1 - betaTotalVariationDistance) * Pc + betaTotalVariationDistance * (1 - dd) 
+    print(' Preparing CSR P...')
+    N = len(S)
+
+    S = np.ascontiguousarray(S, dtype=np.int32)
+
+    P_csr = sparse.csr_matrix(P, dtype=np.float64)
+    P_csr.sum_duplicates()
+    P_csr.eliminate_zeros()
+    P_csr.sort_indices()
+
+    rowPtr = np.ascontiguousarray(P_csr.indptr, dtype=np.int32)
+    colInd = np.ascontiguousarray(P_csr.indices, dtype=np.int32)
+    val = np.ascontiguousarray(P_csr.data, dtype=np.float64)
+
+    assert rowPtr.shape[0] == N + 1
+    assert colInd.shape[0] == val.shape[0]
+
+    print(' Computing PU...')
+
+    def worker(item):
+        i, seq = item
+
+        prob = computeSeqProbPOMMC_CSR_arrays(
+            N,
+            S,
+            rowPtr,
+            colInd,
+            val,
+            seq,
+            None,
+            None,
+        )
+
+        return i, prob
+
+    PU = np.zeros(len(osU), dtype=np.float64)
+
+    with ThreadPoolExecutor(max_workers=nProc) as executor:
+        for i, prob in executor.map(worker, enumerate(osU)):
+            PU[i] = prob
+
+    print(' Done.')
+
+    Pc = np.sum(PU)
+
+    if Pc < 1e-5:
+        return 0.0
+
+    osK = np.asarray(osK, dtype=np.float64)
+    PP = osK / np.sum(osK)
+
+    PU = PU / Pc
+    dd = 0.5 * np.sum(np.abs(PU - PP))
+
+    Pb = (
+        (1 - betaTotalVariationDistance) * Pc
+        + betaTotalVariationDistance * (1 - dd)
+    )
+
     return Pb
+
     
 # get the distributions of modified sequence completeness given the model and number of sequences
 # helper function for pool. 
@@ -954,41 +922,77 @@ def getModifiedSequenceCompletenessSamplingModel(params):
         PBs.append(Pb)
     return PBs
 
-# using C function for creating the Pb samples.     
+
+lib.getModifiedSequenceCompletenessSamplingModelCSR_C.argtypes = [
+    ctypes.c_int,                          # nSeqs
+    ctypes.c_int,                          # N
+    ctypes.POINTER(ctypes.c_int),          # S
+    ctypes.c_int,                          # nnz
+    ctypes.POINTER(ctypes.c_int),          # rowPtr
+    ctypes.POINTER(ctypes.c_int),          # colInd
+    ctypes.POINTER(ctypes.c_double),       # val
+    ctypes.c_int,                          # nSample
+    ctypes.POINTER(ctypes.c_double),       # PBs
+    ctypes.c_double,                       # beta
+    ctypes.c_int,                          # randSeed
+]
+lib.getModifiedSequenceCompletenessSamplingModelCSR_C.restype = None
+
 def getModifiedSequenceCompletenessSamplingModelC(params):
     S, P, nSeq, nSample = params
 
-    S = ascontiguousarray(S, dtype=int32)      # match C int *
-    P = ascontiguousarray(P, dtype=float64)
-    PBs = zeros(nSample, dtype=float64)
+    # State-symbol vector
+    S = np.ascontiguousarray(S, dtype=np.int32)
     N = len(S)
 
-    randSeed = int(random.randint(0, 100000))
+    # Dense input P -> CSR
+    P = np.asarray(P, dtype=np.float64)
 
-    lib.getModifiedSequenceCompletenessSamplingModelC.argtypes = [
-        ctypes.c_int,                           # nSeqs
-        ctypes.c_int,                           # N
-        ctypes.POINTER(ctypes.c_int),           # S
-        ctypes.POINTER(ctypes.c_double),        # P
-        ctypes.c_int,                           # nSample
-        ctypes.POINTER(ctypes.c_double),        # PBs
-        ctypes.c_double,                        # beta
-        ctypes.c_int,                           # randSeed
-    ]
-    lib.getModifiedSequenceCompletenessSamplingModelC.restype = None
+    assert P.size == N * N, f"P.size={P.size}, expected {N*N}"
+    P = P.reshape((N, N))
 
-    lib.getModifiedSequenceCompletenessSamplingModelC(
+    P_csr = sparse.csr_matrix(P, dtype=np.float64)
+
+    # Clean CSR representation
+    P_csr.sum_duplicates()
+    P_csr.eliminate_zeros()
+    P_csr.sort_indices()
+
+    rowPtr = np.ascontiguousarray(P_csr.indptr, dtype=np.int32)
+    colInd = np.ascontiguousarray(P_csr.indices, dtype=np.int32)
+    val = np.ascontiguousarray(P_csr.data, dtype=np.float64)
+
+    nnz = int(P_csr.nnz)
+
+    assert ctypes.sizeof(ctypes.c_int) == S.dtype.itemsize
+    assert ctypes.sizeof(ctypes.c_int) == rowPtr.dtype.itemsize
+    assert ctypes.sizeof(ctypes.c_int) == colInd.dtype.itemsize
+
+    assert rowPtr.size == N + 1
+    assert colInd.size == nnz
+    assert val.size == nnz
+    assert nSeq >= 0
+    assert nSample >= 0
+
+    PBs = np.zeros(nSample, dtype=np.float64)
+
+    randSeed = int(time.time()) & 0x7fffffff    
+    
+    lib.getModifiedSequenceCompletenessSamplingModelCSR_C(
         ctypes.c_int(nSeq),
         ctypes.c_int(N),
         S.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
-        P.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        ctypes.c_int(nnz),
+        rowPtr.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+        colInd.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+        val.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
         ctypes.c_int(nSample),
         PBs.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
         ctypes.c_double(betaTotalVariationDistance),
         ctypes.c_int(randSeed),
     )
 
-    return list(PBs)
+    return PBs
            
                     
 def getMaxLenSeqs(osIn):
@@ -997,91 +1001,7 @@ def getMaxLenSeqs(osIn):
         if len(ss) > maxLenSeqs:
             maxLenSeqs = len(ss)
     return maxLenSeqs
-                    
-def testGetModifiedSequenceCompletenessSamplingModelC():
-    # test with a simple model, the toy model
-    # state vector
-    iModel = 1  # 1, example POMM; 2, the conceptual POMM
-    if iModel == 1:
-        S0 = [0,-1,'A','B','C','C','A','D','E']
-        N = len(S0)
-        # convert to numberic symbols. 
-        SymsRev = {'A':1,'B':2,'C':3,'D':4,'E':5}
-        Syms2 = {1:'A',2:'B',3:'C',4:'D',5:'E'}
-        # state transition probabilities
-        P = zeros((N,N))
-        P[0,2] = 0.5
-        P[0,3] = 0.5
-        P[2,4] = 0.8
-        P[2,1] = 0.2
-        P[3,5] = 0.5
-        P[3,6] = 0.5
-        P[4,7] = 0.9
-        P[4,8] = 0.1        
-        P[5,7] = 0.2
-        P[5,8] = 0.8
-        P[6,8] = 0.5
-        P[6,1] = 0.5
-        P[7,1] = 1.0
-        P[8,1] = 1.0    
-    else:
-        S0 = [0,-1,'A','B','C','C','D','E']
-        N = len(S0)
-        # convert to numberic symbols. 
-        SymsRev = {'A':1,'B':2,'C':3,'D':4,'E':5}
-        Syms2 = {1:'A',2:'B',3:'C',4:'D',5:'E'}
-        # state transition probabilities
-        P = zeros((N,N))
-        P[0,2] = 0.5
-        P[0,3] = 0.5
-        P[2,4] = 1.0
-        P[3,5] = 1.0
-        P[4,6] = 0.8
-        P[4,7] = 0.2
-        P[5,6] = 0.2
-        P[5,7] = 0.8
-        P[6,1] = 1.0
-        P[7,1] = 1.0    
-        
-    print(P)
-    
-    S = [SymsRev[ss] for ss in S0[2:]]
-    S = [0,-1] +S
-    print(S)
-
-    # generate sequences
-    nTot = 90
-    nSample = 10000
-
-    seqs = generateSequencePOMM(S0,P,nTot)
-    syllableLabels = list(SymsRev.keys())
-    osIn, repeatNumSeqs, symsNumeric = getNumericalSequencesNonRepeat(seqs,syllableLabels)
-    
-    #S= [0, -1, 1, 1, 2, 3, 4, 5, 5]
-    S = [0, -1, 1,  2, 3, 4, 5]
-    print(S)
-    P, ml, Pc, stdml, ML = BWPOMMCParallel(S,osIn,nProc=nProc,nRerun=100)
-    printP(P)   
-    
-    nSeq = len(osIn)
-    print('nSeq=',nSeq)
-    
-    t1 = time.time()
-    PBs = getModifiedSequenceCompletenessSamplingModelC((S,P,nSeq,nSample))
-    t2 = time.time()
-    print('C code used ',t2-t1,'sec')
-
-    if 1:   # compare to python code.
-        t1 = time.time() 
-        PBs2 = getModifiedSequenceCompletenessSamplingModel((S,P,nSeq,nSample))
-        t2 = time.time()
-        print('Python code used ',t2-t1,'sec')
-        
-        plt.figure()
-        plt.hist(PBs,bins=50)
-        plt.hist(PBs2,bins=50, alpha=0.5)
-        plt.show()
-                    
+                                        
 
 """ 
 pv, PBs, PbT = getPVSampledSeqsPOMM((S, P, osIn)
@@ -1100,7 +1020,7 @@ pv, PBs, PbT = getPVSampledSeqsPOMM((S, P, osIn)
         PbT - sequence completeness of the observed sequences. 
         
 """
-def getPVSampledSeqsPOMM(S, P, osIn, nSample=10000, nProc=2):
+def getPVSampledSeqsPOMM(S, P, osIn, nSample=10000):
     NS = computeNumTasksProc(nSample, nProc)
     N = len(osIn)
     Params = [[S, P, N, NS[ii]] for ii in range(nProc)]
@@ -1111,13 +1031,13 @@ def getPVSampledSeqsPOMM(S, P, osIn, nSample=10000, nProc=2):
         res = pool.map(getModifiedSequenceCompletenessSamplingModelC, Params, chunksize=1)
 
     PBs = [pb for PPBs in res for pb in PPBs]
-    PBs = sort(PBs)
+    PBs = np.sort(PBs)
 
     print("getting PbT...")
     PbT = computeModifiedSequenceCompleteness(S, P, osIn)
     PbT += 1e-10
 
-    jj = searchsorted(PBs, PbT, side='right')
+    jj = np.searchsorted(PBs, PbT, side='right')
     pv = jj / len(PBs)
 
     return pv, PBs, PbT
@@ -1133,12 +1053,11 @@ def getPVSampledSeqsPOMM(S, P, osIn, nSample=10000, nProc=2):
 #   P, transition probabilities
 #   osIn, observed sequence
 #   nSample, number of samples, default 10000
-#   nProc, number of processors used
 # Returns:
 #   pv, p-value of the observed sequence on the model.
 #   D, the distances of the sampled sequences
 #   ddT, the distance of the observed sequences. 
-def getPVSampledSeqsPOMMTotalVariationDistance(S, P, osIn,nSample = 10000, nProc=2):
+def getPVSampledSeqsPOMMTotalVariationDistance(S, P, osIn,nSample = 10000):
     print('Getting p-value using total variation distance...')
     NS = computeNumTasksProc(nSample,nProc)
     N = len(osIn)
@@ -1150,7 +1069,7 @@ def getPVSampledSeqsPOMMTotalVariationDistance(S, P, osIn,nSample = 10000, nProc
     pool.join()
     
     DDs = [dd for DDDs in res for dd in DDDs]   
-    DDs = sort(DDs)[::-1]
+    DDs = np.sort(DDs)[::-1]
 
     ddT = computeTotalVariationDistance(S,P,osIn)       
     ddT -= 1e-10    # in case all dd's sampled are tied, we want the target dd not swamped in numerical noise!
@@ -1175,7 +1094,7 @@ def generateSequencePOMMFun(Params):
 #   N - number of sequences in each set.
 #   nSample - number of sets sampled. 
 #   nProc - number of processes used. 
-def generateSequenceSamples(S,P,N,nSample=10000,nProc=2):
+def generateSequenceSamples(S,P,N,nSample=10000):
     NS = computeNumTasksProc(nSample,nProc)
     Params = [[S, P, N, NS[ii]] for ii in range(nProc)]
     pool = Pool(processes = nProc)
@@ -1196,12 +1115,12 @@ def ProbFindingSubString(osIn,Subs):
     N = len(osIn)
     for ss in osIn:
         ss = [0] + ss + [-1]
-        ss = array(ss)
+        ss = np.array(ss)
         
         for subs in Subs:
             flag = 0
             m = len(subs)   
-            subs = array(subs)      
+            subs = np.array(subs)      
             for ii in range(len(ss) - m + 1):
                 if sum(abs(ss[ii:ii+m] - subs)) == 0:
                     nFound += 1
@@ -1231,7 +1150,7 @@ def computePsStatsInSamplesFun(Params):
 #   pv - p-value of the observed Ps0 being larger than the smapled. 
 #   pL - lower bound of Ps in 95% confidence interval
 #   pS - upper bound of Ps in 95% confidence interval   
-def computePsStatsInSamples(osTSamples,ss,Ps0,nProc=2):
+def computePsStatsInSamples(osTSamples,ss,Ps0):
 
     nSamples = len(osTSamples)
     NS = computeNumTasksProc(nSamples,nProc)
@@ -1254,14 +1173,14 @@ def computePsStatsInSamples(osTSamples,ss,Ps0,nProc=2):
     for PPS in res:
         PP3 += PPS
         
-    PP3 = sort(PP3)
+    PP3 = np.sort(PP3)
     for j3 in range(len(PP3)):
         if PP3[j3] > Ps0+1e-10:
             break
     pv = 1.0 * j3/len(PP3)
     pL = PP3[int(len(PP3)* 0.025)]
     pU = PP3[int(len(PP3)* 0.975)]
-    pMedian = median(PP3)
+    pMedian = np.median(PP3)
                     
     return pv, pL, pU, pMedian
 
@@ -1318,15 +1237,15 @@ def constructNGramPOMM(osIn, ng):
             ii = jj
                 
     # construct the transition matrix. 
-    P2 = zeros((len(S2),len(S2)))
+    P2 = np.zeros((len(S2),len(S2)))
     for (ii,jj) in StateTransitionCounts.keys():
         P2[ii,jj] = StateTransitionCounts[(ii,jj)]
     P2[0,0] = 0         
     P2 = normP(P2)
             
     # reorder the states. 
-    P = zeros((len(S2),len(S2)))
-    iids = argsort(S2[2:])
+    P = np.zeros((len(S2),len(S2)))
+    iids = np.argsort(S2[2:])
     S = [S2[kk+2] for kk in iids]
     S = [0,-1] + S
     SnumVis = [StateNumVisits[2:][kk] for kk in iids]
@@ -1360,6 +1279,22 @@ def constructNGramPOMM(osIn, ng):
     
 """
 
+lib.constructNGramPOMMC.argtypes = [
+    ctypes.c_int, 
+    ctypes.POINTER(ctypes.c_int),
+    ctypes.c_int
+]
+
+class ThreeArrays(ctypes.Structure):
+    _fields_ = [("N", ctypes.c_int),
+                ("S", ctypes.POINTER(ctypes.c_int)),
+                ("P", ctypes.POINTER(ctypes.c_double)),
+                ("StateNumVis", ctypes.POINTER(ctypes.c_int))
+            ]
+
+lib.constructNGramPOMMC.restype = ctypes.POINTER(ThreeArrays)
+
+
 def constructNGramPOMMC(osIn, ng):
     
     #concatenate the sequences into a long int array. sequence sequence is flanked by 0...-1
@@ -1368,35 +1303,20 @@ def constructNGramPOMMC(osIn, ng):
         osInC.append(0)
         osInC += list(osIn[i])
         osInC.append(-1)
-    osInC = array(osInC).astype(int32)
+    osInC = np.array(osInC).astype(np.int32)
     nSeq = len(osInC)
-        
-    lib.constructNGramPOMMC.argtypes = [
-        ctypes.c_long, 
-        ctypes.POINTER(ctypes.c_long),
-        ctypes.c_long
-    ]
-
-    class ThreeArrays(ctypes.Structure):
-        _fields_ = [("N", ctypes.c_int),
-                    ("S", ctypes.POINTER(ctypes.c_int)),
-                    ("P", ctypes.POINTER(ctypes.c_double)),
-                    ("StateNumVis", ctypes.POINTER(ctypes.c_int))
-                ]
-    
-    lib.constructNGramPOMMC.restype = ctypes.POINTER(ThreeArrays)
-    
+            
     A = lib.constructNGramPOMMC(
-        ctypes.c_long(nSeq), 
-        osInC.ctypes.data_as(ctypes.POINTER(ctypes.c_long)),
-        ctypes.c_long(ng)
+        ctypes.c_int(nSeq), 
+        osInC.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+        ctypes.c_int(ng)
     )
     
     # transfer the data from C memory to Python memory. 
     N = A.contents.N
     S2 = [A.contents.S[i] for i in range(N)]
     P2 = [A.contents.P[i] for i in range(N * N)]
-    P2 = array(P2).reshape(N,N)
+    P2 = np.array(P2).reshape(N,N)
     StateNumVisits = [A.contents.StateNumVis[i] for i in range(N)]
 
     # free memory allocated in the C code.  
@@ -1404,8 +1324,8 @@ def constructNGramPOMMC(osIn, ng):
     lib.freeThreeArrays(A)
     
     # reorder the states. 
-    P = zeros((len(S2),len(S2)))
-    iids = argsort(S2[2:])
+    P = np.zeros((len(S2),len(S2)))
+    iids = np.argsort(S2[2:])
     S = [S2[kk+2] for kk in iids]
     S = [0,-1] + S
     SnumVis = [StateNumVisits[2:][kk] for kk in iids]
@@ -1423,96 +1343,9 @@ def constructNGramPOMMC(osIn, ng):
     return S, P, SnumVis
     
         
-    
-def testConstructNGramPOMM():
-    
-    iModel = 2
-    
-    if iModel == 1:
-        # test with a simple model, the toy model
-        # state vector
-        SO = [0,-1,'A','B','C','C','A','D','E']
-        N = len(SO)
-        # convert to numberic symbols. 
-        SymsRev = {'A':1,'B':2,'C':3,'D':4,'E':5}
-        Syms2 = {1:'A',2:'B',3:'C',4:'D',5:'E'}
-        # state transition probabilities
-        PO = zeros((N,N))
-        PO[0,2] = 0.5
-        PO[0,3] = 0.5
-        PO[2,4] = 0.8
-        PO[2,1] = 0.2
-        PO[3,5] = 0.5
-        PO[3,6] = 0.5
-        PO[4,7] = 0.9
-        PO[4,8] = 0.1       
-        PO[5,7] = 0.2
-        PO[5,8] = 0.8
-        PO[6,8] = 0.5
-        PO[6,1] = 0.5
-        PO[7,1] = 1.0
-        PO[8,1] = 1.0   
-    elif iModel == 2:
-        # model for sequence generation
-        SO = [0,-1,'a','b','c','a','c','d','e','b','c','e','c','d']
-        SymsRev = {'a':1,'b':2,'c':3,'d':4,'e':5}
-        Syms2 = {1:'a',2:'b',3:'c',4:'d',5:'e'}
-        N = len(SO)
-        PO = zeros((N,N))
-        PO[0,2] = 1
-        PO[2,3] = 1
-        PO[3,4] = 1
-        PO[4,5] = 0.2
-        PO[4,8] = 0.8
-        PO[5,6] = 1
-        PO[6,7] = 1
-        PO[7,1] = 1
-        PO[8,9] = 1
-        PO[9,10] = 1
-        PO[10,11] = 1
-        PO[11,12] = 1
-        PO[12,13] = 1
-        PO[13,5] = 0.5
-        PO[13,1] = 0.5
-        PO = normP(PO)
-        sylLabels = list(unique(SO[2:]))
-        print(sylLabels)
-
-    # generate sequences
-    nTot = 10000
-    seqs = generateSequencePOMM(SO,PO,nTot)
-    syllableLabels = list(SymsRev.keys())
-    osIn, repeatNumSeqs, symsNumeric = getNumericalSequencesNonRepeat(seqs,syllableLabels)
-
-    # construct ngram model. 
-    ng = 3
-    
-    t1 = time.time()
-    S, P, SnumVis = constructNGramPOMMC(osIn, ng)
-    t2 = time.time()
-    print('C code used ',t2-t1,' sec')
-    print('S = ',S)
-    S2 = [0,-1]
-    for ss in S[2:]:
-        S2.append(Syms2[ss]) 
-    plotTransitionDiagram(S2,P,Pcut=0.01,filenamePS='test.ConstructNGramPOMMC.ps', \
-            removeUnreachable=False,markedStates=[])    
-    
-    t1 = time.time()    
-    S, P, SnumVis = constructNGramPOMM(osIn, ng)
-    t2 = time.time()
-    print('Python code used ',t2-t1,' sec')
-    print('S = ',S)
-    S2 = [0,-1]
-    for ss in S[2:]:
-        S2.append(Syms2[ss]) 
-    plotTransitionDiagram(S2,P,Pcut=0.01,filenamePS='test.ConstructNGramPOMM.ps', \
-            removeUnreachable=False,markedStates=[])    
-
-
 def AdjustTransProbWithBWKeepConnections(S,P,osIn,nRerun=100,Pcut=0.001):
     N = len(S)
-    P, ml, Pc, stdml, ML = BWPOMMCParallel(S,osIn, Pcut= 0.001, nRerun=nRerun, nProc = nProc)    
+    P, ml, Pc, stdml, ML = BWPOMMCParallel(S,osIn, Pcut= 0.001, nRerun=nRerun)    
     S, P = removeUnreachableStates(S,P)    
     return S, P, Pc
 
@@ -1543,7 +1376,7 @@ def readNGramPOMMSearchRes(fnSave):
     ng = res["ng"]
     pv = res["pv"]
     PbT = res["PbT"]
-    P = array(res["P"],dtype="float64")
+    P = np.array(res["P"],dtype="float64")
     SnumVis = res["SnumVis"]        
     
     return S, P, ng, pv, PbT, SnumVis   
@@ -1579,7 +1412,6 @@ def computeAIC(S,P,osU,osK):
  Input parameters:
     S - initial POMM
     osIn - observed sequences
-    nProc - number of processes for parallel computing in BWPOMMFun
     nRerun - number of times B-W is run with different seeds. 
  Return S, P, Pc    
     S - state vector
@@ -1587,9 +1419,9 @@ def computeAIC(S,P,osU,osK):
     Pc - sequence completeness
 """ 
     
-def MinPOMMSimpDeleteStates(S, osIn, nProc = 2, nRerun = 50, pValue=pValue, nSample=10000, fnSave=''):
+def MinPOMMSimpDeleteStates(S, osIn, nRerun = 50, pValue=pValue, nSample=10000, fnSave=''):
     
-    syms = list(unique(S[2:]))
+    syms = list(np.unique(S[2:]))
     
     for sm in syms:
         while True:
@@ -1602,8 +1434,8 @@ def MinPOMMSimpDeleteStates(S, osIn, nProc = 2, nRerun = 50, pValue=pValue, nSam
             STest = STest[:kk] + STest[kk+1:]
             print('\nTest removing state', kk, 'with sym', S[kk])
 
-            PTest, ml, Pc, stdml, ML = BWPOMMCParallel(STest, osIn, nProc=nProc, nRerun=nRerun)
-            pv, PBs, PbT = getPVSampledSeqsPOMM(STest, PTest, osIn, nProc=nProc, nSample=nSample)
+            PTest, ml, Pc, stdml, ML = BWPOMMCParallel(STest, osIn, nRerun=nRerun)
+            pv, PBs, PbT = getPVSampledSeqsPOMM(STest, PTest, osIn, nSample=nSample)
 
             if pv >= pValue:
                 S = STest.copy()
@@ -1615,8 +1447,8 @@ def MinPOMMSimpDeleteStates(S, osIn, nProc = 2, nRerun = 50, pValue=pValue, nSam
 
                                     
     print('Updated state S = ',S)
-    P, ml, Pc, stdml, ML = BWPOMMCParallel(S, osIn, nProc=nProc, nRerun=nRerun)    
-    pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nProc=nProc, nSample = nSample)
+    P, ml, Pc, stdml, ML = BWPOMMCParallel(S, osIn, nRerun=nRerun)    
+    pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nSample = nSample)
         
     print(f'    After deleting states model pv= {pv}')
     return S, P, pv, PBs, PbT, Pc   
@@ -1668,7 +1500,7 @@ def checkEndStateReachability(S,C):
         flag = 0
         SFront2 = []
         for jj in SFront:
-            iid = where(C[:,jj] == 1)[0]
+            iid = np.where(C[:,jj] == 1)[0]
             for ii in iid:
                 if ii not in SReached:
                     SReached.append(ii)
@@ -1687,43 +1519,13 @@ def checkEndStateReachability(S,C):
     return iReach   
     
     
-def testCheckEndStateReachability():
-    
-    iModel = 2  # 1, a model with all state can be reached; 2, a model some state cannot be reached. 
-    
-    if iModel == 1:
-        S = [0,-1,1,2,3]
-        N= len(S)
-        C = zeros((N,N))
-        C[0,2] = 1
-        C[2,3] = 1
-        C[2,4] = 1
-        C[3,1] = 1
-        C[4,3] = 1
-    else:
-        S = [0,-1,1,2,3,4]
-        N = len(S)
-        C = zeros((N,N))
-        C[0,2] = 1
-        C[2,3] = 1
-        C[2,4] = 1
-        C[3,1] = 1
-        C[4,5] = 1
-        C[5,4] = 1
-    
-    iReach = checkEndStateReachability(S,C)
-    if iReach == 0:
-        print('Inifinite loop detected!')
-    else:
-        print('All states lead to the end.')
-
 # get unique sequences osU, counts, osK, and unique symbols symU from sequence osIn.
 def getUniqueSequences(osIn):
-    symU = array([])
+    symU = np.array([])
     osU = []
     osK = []
     for ss in osIn:
-        ss = array(ss)
+        ss = np.array(ss)
         flag = 0
         for kk in range(len(osU)):
             su = osU[kk]
@@ -1735,7 +1537,7 @@ def getUniqueSequences(osIn):
             continue
         osU.append(ss)      
         osK.append(1)
-        symU = unique(concatenate((symU,ss)))
+        symU = np.unique(np.concatenate((symU,ss)))
     symU = symU.astype(int) 
     return osU,osK,symU 
     
@@ -1820,37 +1622,37 @@ def getUniuqeSequencesProbConfidenceIntervals(osK, alpha):
         pU.append(p_upper)
     return pL, pU       
     
+# set parameter types   
+lib.BWPOMMC.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_int), \
+                        ctypes.c_int, ctypes.POINTER(ctypes.c_int), 
+                        ctypes.c_int,\
+                        ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_double), \
+                        ctypes.c_double, ctypes.c_int, ctypes.c_int]  
+lib.BWPOMMC.restype = ctypes.c_double
 
 def BWPOMMCFun(Params):
     osU, osK, S, P, pTol, maxIter = Params
     N = len(S)
-    S = array(S).astype(int32)
-    P = array(P)
+    S = np.array(S).astype(np.int32)
+    P = np.array(P)
     osIn =[]
     for i in range(len(osU)):
         osIn.append(0)
         osIn += list(osU[i])
         osIn.append(-1)
-    osIn = array(osIn).astype(int32)
-    osK = array(osK).astype(int32)
+    osIn = np.array(osIn).astype(np.int32)
+    osK = np.array(osK).astype(np.int32)
     nU = len(osK)
     randSeed = int(rand() * 100000);
     nSeq = len(osIn)
 
     t1 = time.time()
-    # set parameter types   
-    lib.BWPOMMC.argtypes = [ctypes.c_long, ctypes.POINTER(ctypes.c_long), \
-                            ctypes.c_long, ctypes.POINTER(ctypes.c_long), 
-                            ctypes.c_long,\
-                            ctypes.POINTER(ctypes.c_long), ctypes.POINTER(ctypes.c_double), \
-                            ctypes.c_double, ctypes.c_long, ctypes.c_long]  
-    lib.BWPOMMC.restype = ctypes.c_double
     # call the C function.
-    ml = lib.BWPOMMC(ctypes.c_long(nSeq), osIn.ctypes.data_as(ctypes.POINTER(ctypes.c_long)), \
-                 ctypes.c_long(nU), osK.ctypes.data_as(ctypes.POINTER(ctypes.c_long)), \
-                 ctypes.c_long(N),S.ctypes.data_as(ctypes.POINTER(ctypes.c_long)), \
+    ml = lib.BWPOMMC(ctypes.c_int(nSeq), osIn.ctypes.data_as(ctypes.POINTER(ctypes.c_int)), \
+                 ctypes.c_int(nU), osK.ctypes.data_as(ctypes.POINTER(ctypes.c_int)), \
+                 ctypes.c_int(N),S.ctypes.data_as(ctypes.POINTER(ctypes.c_int)), \
                  P.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), \
-                 ctypes.c_double(pTol), ctypes.c_long(maxIter), ctypes.c_long(randSeed))
+                 ctypes.c_double(pTol), ctypes.c_int(maxIter), ctypes.c_int(randSeed))
     t2 = time.time()
     #print(f'     BWPOMMC used {t2-t1:.4f} sec')
     
@@ -1861,50 +1663,50 @@ def BWPOMMCFun(Params):
     return (ml,P)                   
 
 # multi-thread BWPOMMCMultiThread
+lib.BWPOMMCMultiThread.argtypes = [
+        ctypes.c_int, 
+        ctypes.POINTER(ctypes.c_int), 
+        ctypes.c_int, 
+        ctypes.POINTER(ctypes.c_int), 
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_int), 
+        ctypes.POINTER(ctypes.c_double), 
+        ctypes.c_double, 
+        ctypes.c_int, 
+        ctypes.c_int, 
+        ctypes.c_int
+]   
+lib.BWPOMMCMultiThread.restype = ctypes.c_double
+
 def BWPOMMCFunMultiThread(osU, osK, S, P, pTol, maxIter, numThreads):
     N = len(S)
-    S = array(S).astype(int32)
-    P = array(P)
+    S = np.array(S).astype(np.int32)
+    P = np.array(P)
     osIn =[]
     for i in range(len(osU)):
         osIn.append(0)
         osIn += list(osU[i])
         osIn.append(-1)
-    osIn = array(osIn).astype(int32)
-    osK = array(osK).astype(int32)
+    osIn = np.array(osIn).astype(np.int32)
+    osK = np.array(osK).astype(np.int32)
     nU = len(osK)
     randSeed = int(rand() * 100000);
     nSeq = len(osIn)
     
     t1 = time.time()
-    # set parameter types   
-    lib.BWPOMMCMultiThread.argtypes = [
-            ctypes.c_long, 
-            ctypes.POINTER(ctypes.c_long), 
-            ctypes.c_long, 
-            ctypes.POINTER(ctypes.c_long), 
-            ctypes.c_long,
-            ctypes.POINTER(ctypes.c_long), 
-            ctypes.POINTER(ctypes.c_double), 
-            ctypes.c_double, 
-            ctypes.c_long, 
-            ctypes.c_long, 
-            ctypes.c_long
-    ]   
-    lib.BWPOMMCMultiThread.restype = ctypes.c_double
     # call the C function.
     ml = lib.BWPOMMCMultiThread(
-            ctypes.c_long(nSeq), 
-            osIn.ctypes.data_as(ctypes.POINTER(ctypes.c_long)), 
-            ctypes.c_long(nU), 
-            osK.ctypes.data_as(ctypes.POINTER(ctypes.c_long)), 
-            ctypes.c_long(N),
-            S.ctypes.data_as(ctypes.POINTER(ctypes.c_long)), 
+            ctypes.c_int(nSeq), 
+            osIn.ctypes.data_as(ctypes.POINTER(ctypes.c_int)), 
+            ctypes.c_int(nU), 
+            osK.ctypes.data_as(ctypes.POINTER(ctypes.c_int)), 
+            ctypes.c_int(N),
+            S.ctypes.data_as(ctypes.POINTER(ctypes.c_int)), 
             P.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), 
             ctypes.c_double(pTol), 
-            ctypes.c_long(maxIter), 
-            ctypes.c_long(randSeed), 
-            ctypes.c_long(numThreads)
+            ctypes.c_int(maxIter), 
+            ctypes.c_int(randSeed), 
+            ctypes.c_int(numThreads)
     )
     t2 = time.time()
     print('     BWPOMMCMultiThread used ',t2-t1,'sec')
@@ -1927,7 +1729,6 @@ def BWPOMMCFunMultiThread(osU, osK, S, P, pTol, maxIter, numThreads):
 #   maxSteps, maximum number of steps for updating the transition probabilities
 #   pTol, tolerance for the transition probabilities
 #   nRerun, number of times the algorithm is run. 
-#   nProc, number of processors used. 
 # Returns:
 #   return P, mlMax, Pc, mlSigma, ML   
 #   P, computed transition matrix
@@ -1935,10 +1736,10 @@ def BWPOMMCFunMultiThread(osU, osK, S, P, pTol, maxIter, numThreads):
 #   Pc, sequence completeness of the input sequences on the model
 #   stdML, standard deviation of the maximum likelihood achieved for all runs. 
 #   MK, list of maximum likelihoods
-def BWPOMMCParallel(S, osInO, Pcut=0.0, maxSteps=10000, pTol=1e-6, nRerun=BWRerun, nProc = nProc):
+def BWPOMMCParallel(S, osInO, Pcut=0.0, maxSteps=10000, pTol=1e-6, nRerun=BWRerun):
     osIn = osInO.copy()
     N = len(S)
-    S = array(S)
+    S = np.array(S)
     osU, osK, symU = getUniqueSequences(osIn)
     
     Ps = []
@@ -1953,11 +1754,11 @@ def BWPOMMCParallel(S, osInO, Pcut=0.0, maxSteps=10000, pTol=1e-6, nRerun=BWReru
     pool.join()
     
     ML = [ml for (ml, P) in res]
-    ML = array(ML)
+    ML = np.array(ML)
     iid = ML.argmax()
     P = res[iid][1]
     Pc, Ps = computeSequenceCompleteness(S,P,osIn,osU)
-    mlSigma = std(ML)
+    mlSigma = np.std(ML)
     mlMax = ML[iid]
     return P, mlMax, Pc, mlSigma, ML    
 
@@ -1967,7 +1768,7 @@ def BWPOMMCParallel(S, osInO, Pcut=0.0, maxSteps=10000, pTol=1e-6, nRerun=BWReru
 # osU, unique sequences
 # osK, counts. 
 def computeLogLike(S,P,osU,osK):
-    S = array(S)
+    S = np.array(S)
     N = len(S)
     llk = 0
     for kk in range(len(osU)):
@@ -1975,14 +1776,14 @@ def computeLogLike(S,P,osU,osK):
         os = [0] + ss + [-1]
         T = len(os)             # number of steps. 
         # compute alphas
-        A = zeros((N,T))
+        A = np.zeros((N,T))
         A[0,0] = 1.0
         for t in range(1,T):
-            iid = where(S == os[t])[0]      # these are the states of allowed transitions. 
+            iid = np.where(S == os[t])[0]      # these are the states of allowed transitions. 
             for jj in iid:
                 for k in range(N):
                     A[jj,t] += P[k,jj] * A[k,t-1]
-        llk += log(A[1,T-1]+1e-100) * osK[kk]
+        llk += np.log(A[1,T-1]+1e-100) * osK[kk]
     return llk
                         
 # normalize the transition matrix. Enforce the fact that the first row is the start state, and the second row is the end state.
@@ -2048,20 +1849,20 @@ def printP(P):
 #   osU, unique sequences
 #   PU, probabilities of unique sequences.  
 def getSequenceProbModel(S,P,osIn,osU = []):
-    S = array(S)
+    S = np.array(S)
     N = len(S)
     if len(osU) == 0:
         osU,osK,symU = getUniqueSequences(osIn)
-    PU = zeros(len(osU))
+    PU = np.zeros(len(osU))
     for kk in range(len(osU)):
-        ss = array(osU[kk])
+        ss = np.array(osU[kk])
         os = [0] + list(ss) + [-1]
         T = len(os)             # number of steps. 
         # compute alphas
-        A = zeros((N,T))
+        A = np.zeros((N,T))
         A[0,0] = 1.0
         for t in range(1,T):
-            iid = where(S == os[t])[0]      # these are the states of allowed transitions. 
+            iid = np.where(S == os[t])[0]      # these are the states of allowed transitions. 
             for jj in iid:
                 for k in range(N):
                     A[jj,t] += P[k,jj] * A[k,t-1]
@@ -2078,21 +1879,21 @@ def getSequenceProbModel(S,P,osIn,osU = []):
 #   Pc, sequence completeness
 #   Ps, probabilities of the sequences
 def computeSequenceCompleteness(S,P,osIn,osU = []):
-    S = array(S)
+    S = np.array(S)
     N = len(S)
     if len(osU) == 0:
         osU,osK,symU = getUniqueSequences(osIn)
     Pc = 0
     Ps = []
     for ss in osU:
-        ss = array(ss)
+        ss = np.array(ss)
         os = [0] + list(ss) + [-1]
         T = len(os)             # number of steps. 
         # compute alphas
-        A = zeros((N,T))
+        A = np.zeros((N,T))
         A[0,0] = 1.0
         for t in range(1,T):
-            iid = where(S == os[t])[0]      # these are the states of allowed transitions. 
+            iid = np.where(S == os[t])[0]      # these are the states of allowed transitions. 
             for jj in iid:
                 for k in range(N):
                     A[jj,t] += P[k,jj] * A[k,t-1]
@@ -2102,37 +1903,37 @@ def computeSequenceCompleteness(S,P,osIn,osU = []):
     
 # compute the probability of the sequence given the model
 def computeSequenceProb(ss, S, P):
-    S = array(S)
+    S = np.array(S)
     N = len(S)
 
-    ss = array(ss)
+    ss = np.array(ss)
     os = [0] + list(ss) + [-1]
     T = len(os)             # number of steps. 
     # compute alphas
-    A = zeros((N,T))
+    A = np.zeros((N,T))
     A[0,0] = 1.0
     for t in range(1,T):
-        iid = where(S == os[t])[0]      # these are the states of allowed transitions. 
+        iid = np.where(S == os[t])[0]      # these are the states of allowed transitions. 
         for jj in iid:
-            A[jj, t] = dot(A[:, t-1], P[:, jj])
+            A[jj, t] = np.dot(A[:, t-1], P[:, jj])
     pS = A[1,T-1]                       # this the probability of observing this unique sequence
     return pS       
 
 # compute the probability of the sequence given the model, the sub does not need match the ending. 
 def computeSequenceProbNoEnd(ss, S, P):
-    S = array(S)
+    S = np.array(S)
     N = len(S)
 
-    ss = array(ss)
+    ss = np.array(ss)
     os = [0] + list(ss)
     T = len(os)             # number of steps. 
     # compute alphas
-    A = zeros((N,T))
+    A = np.zeros((N,T))
     A[0,0] = 1.0
     for t in range(1,T):
-        iid = where(S == os[t])[0]      # these are the states of allowed transitions. 
+        iid = np.where(S == os[t])[0]      # these are the states of allowed transitions. 
         for jj in iid:
-            A[jj, t] = dot(A[:, t-1], P[:, jj])
+            A[jj, t] = np.dot(A[:, t-1], P[:, jj])
     pS = sum(A[:,T-1])                       # this the probability of observing this unique sequence
     return pS       
                         
@@ -2145,10 +1946,10 @@ def SampleTransitionCounts(P,N):
         for i in range(1,k):
             sm += P[i]
             S.append(sm)
-        S = array(S)
-        C = zeros(k)    
+        S = np.array(S)
+        C = np.zeros(k)    
         for kk in range(N):
-            iid = where(rand() <= S)[0][0]
+            iid = np.where(rand() <= S)[0][0]
             C[iid] += 1
         return C
 
@@ -2158,7 +1959,7 @@ def SampleTransitionCounts(P,N):
 # return P, C - counts of transitions
 def ConstructMarkovModel(osIn,syms,pcut = 0.0):
     N = len(syms)+2
-    C = zeros((N,N))    
+    C = np.zeros((N,N))    
     # go through the sequences.
     for seq in osIn:
         i = 0
@@ -2169,7 +1970,7 @@ def ConstructMarkovModel(osIn,syms,pcut = 0.0):
         C[i,1] += 1
     P = C.copy()    
     P = normP(P)
-    C[where(P < pcut)] = 0
+    C[np.where(P < pcut)] = 0
     P = normP(C)
     S = [0,-1]+syms
     S, P = removeUnreachableStates(S,P)
@@ -2186,10 +1987,10 @@ def CreateMarkovModelFanout(nSyms,nFanOut):
     for i in range(nSyms):
         S.append(i+1)
     N = len(S)          # number of states. 
-    P = zeros((N,N))    # transition probability. 
+    P = np.zeros((N,N))    # transition probability. 
     # select states to be connected to the start state. 
     iid = randomSelectInd(nFanOut,nSyms)+2
-    P[0,iid] = 1./len(iid)*ones(len(iid))
+    P[0,iid] = 1./len(iid) * np.ones(len(iid))
     n0 = len(iid)
     n2 = 0  # transitions to the end state
     for i in range(nSyms):
@@ -2205,7 +2006,7 @@ def CreateMarkovModelFanout(nSyms,nFanOut):
         ind = int(rand() * nSyms)
         if ind == 1 or P[ind,1] > 0:
             continue
-        iid = where(P[ind,:] > 0)[0]    
+        iid = np.where(P[ind,:] > 0)[0]    
         iid2 = iid[int(rand()*len(iid))]
         P[ind,1] = P[ind,iid2]
         P[ind,iid2] = 0
@@ -2238,10 +2039,10 @@ def CreatePOMMFanout(nSyms,nExtra,nFanOut):
         for j in range(nExtra+1):
             S.append(i+1)
     N = len(S)          # number of states. 
-    P = zeros((N,N))    # transition probability. 
+    P = np.zeros((N,N))    # transition probability. 
     # select states to be connected to the start state. 
     iid = randomSelectInd(nFanOut,N-2)+2
-    P[0,iid] = 1./len(iid)*ones(len(iid))
+    P[0,iid] = 1./len(iid) * np.ones(len(iid))
     n0 = len(iid)
     n2 = 0  # transitions to the end state
     for i in range(2,N):
@@ -2257,7 +2058,7 @@ def CreatePOMMFanout(nSyms,nExtra,nFanOut):
         ind = int(rand() * nSyms)
         if ind == 1 or P[ind,1] > 0:
             continue
-        iid = where(P[ind,:] > 0)[0]    
+        iid = np.where(P[ind,:] > 0)[0]    
         iid2 = iid[int(rand()*len(iid))]
         P[ind,1] = P[ind,iid2]
         P[ind,iid2] = 0
@@ -2291,7 +2092,7 @@ def removeUnreachableStates(SIn, PIn, epsilon=1e-10, returniid=False):
     while frontier:
         new_frontier = set()
         for i in frontier:
-            js = where(P[i, :] > epsilon)[0]
+            js = np.where(P[i, :] > epsilon)[0]
             for j in js:
                 if j not in reachable:
                     new_frontier.add(j)
@@ -2308,7 +2109,7 @@ def removeUnreachableStates(SIn, PIn, epsilon=1e-10, returniid=False):
                 P[i, 1] += lost_mass
 
     S = [SIn[ii] for ii in iid]
-    P2 = P[ix_(iid, iid)].copy()
+    P2 = P[np.ix_(iid, iid)].copy()
     if not returniid:
         return S, P2
     return S, P2, iid
@@ -2319,7 +2120,7 @@ def deleteTransitionSmallProb(SIn,PIn,Pcut = 0.001, iRemoveUnreachableState = 1)
     P = PIn.copy()
     S = SIn.copy()
     Pend = P[:,1].copy()
-    P[where(PIn < Pcut)] = 0
+    P[np.where(PIn < Pcut)] = 0
     P[:,1] = Pend # preserve transitions to the end state
     P = normP(P)
     if iRemoveUnreachableState == 1:
@@ -2353,7 +2154,7 @@ def convertToNumericalSequences(seqsIn,symsIn):
 #       repeatNumSeqs, repeat numbers of each syllable in the sequence. 
 #       Syms, Syms2, dictionary for convergting syms to numerics and vice versa. 
 def getNumericalSequencesNonRepeat(seqs,syllableLabels):
-
+    
     Syms = {}
     Syms2 = {}
     for i in range(len(syllableLabels)):
@@ -2406,7 +2207,7 @@ def plotTransitionDiagram(S,P0,Pcut=0.01,filenameDot='temp.dot',filenamePDF='tem
     N = len(S)
     
     # find duplicate states
-    SU = unique(S[2:])
+    SU = np.unique(S[2:])
     multipleStates = []
     for ss in SU:
         kk = 0
@@ -2463,7 +2264,7 @@ def plotTransitionDiagram(S,P0,Pcut=0.01,filenameDot='temp.dot',filenamePDF='tem
     
                 
     # sort the edges
-    iid = argsort(edgeProb)
+    iid = np.argsort(edgeProb)
     for i in iid:
         ii,jj,cl,pw = edgeLists[i]
         p = edgeProb[i] 
@@ -2532,7 +2333,7 @@ def plotTransitionDiagramOld(S,P,Pcut=0.01,filenameDot='temp.dot',filenamePS='te
 # plot sequence completeness in a nice way. 
 def plotSequenceCompleteness(PCs,ylimMax=-1,xlimlow=0, width=0.02, ticks = [0,0.5,1]):
     plt.xlim([-width,1+width])
-    cc,bb = histogram(PCs,bins=30)
+    cc,bb = np.histogram(PCs,bins=30)
     plt.bar(bb[:-1],cc,width=width,color='gray')
     plt.axis('off')
     plt.plot([xlimlow,1],[0,0],color='gray')
@@ -2552,7 +2353,7 @@ def plotRepeatNumberDistribution(RepeatNums,rrmax=0, ylimMax=-1,width=0.2,syllab
     for ii in range(1,rrmax+1):
         bbins.append(ii+0.5)
     plt.xlim([0,rrmax+1])
-    cc,bb = histogram(RepeatNums,bins=bbins)
+    cc,bb = np.histogram(RepeatNums,bins=bbins)
     plt.bar(bb[:-1]+0.5,cc,width=width,color='gray')
     plt.axis('off')
     plt.plot([0,rrmax+1],[0,0],color='gray')
@@ -2570,14 +2371,14 @@ def plotRepeatNumberDistribution(RepeatNums,rrmax=0, ylimMax=-1,width=0.2,syllab
 # randomly select nind out of ntot
 # excludeInd != -1, exclude this index. 
 def randomSelectInd(nind, ntot, excludeInd = -1):
-    iid = array([]).astype(int)
+    iid = np.array([]).astype(int)
     for j in range(nind):
         while 1:
             ind = int(rand() * ntot)
             if ind == excludeInd:
                 continue
-            if (len(where(iid == ind)[0]) == 0):
-                iid = append(iid,ind)
+            if (len(np.where(iid == ind)[0]) == 0):
+                iid = np.append(iid,ind)
                 break
     return iid  
 
@@ -2614,7 +2415,7 @@ def MergeStates(S,P,mergeInds):
 #   osT - observed sequences. 
 # Return:
 #   P2 - transition matrix. 
-def MergeStatesRecalculateP(S,P,mergeInds,osT,maxIterBW=1000,nRerunBW=100,nProc=2, Pcut=0.0):
+def MergeStatesRecalculateP(S,P,mergeInds,osT,maxIterBW=1000,nRerunBW=100,Pcut=0.0):
     P = normP(P, Pcut=Pcut)
     P2 = P.copy()
     for (ii,jj) in mergeInds:
@@ -2628,15 +2429,17 @@ def MergeStatesRecalculateP(S,P,mergeInds,osT,maxIterBW=1000,nRerunBW=100,nProc=
         P2[ii,:] = 0
     P2 = normP(P2, Pcut=Pcut)
     print('Recalculating the transition probabilities...')
-    P2, ml, Pc, stdml, ML = BWPOMMCParallel(S,osT,maxSteps=maxIterBW,nProc=nProc,nRerun=nRerunBW)
+    P2, ml, Pc, stdml, ML = BWPOMMCParallel(S,osT,maxSteps=maxIterBW, nRerun=nRerunBW)
     return P2
 
 # remove unique sequences with probability smaller than pCut. 
 def RemoveRareSequences(osIn, pCut = 0.001):
     print('Deleting sequences with probabilty smaller than ',pCut)
-    osU,osK,symU = getUniqueSequences(osIn)
-    osP = osK/sum(osK)
-    iid = where(osP < pCut)[0]
+    osU, osK, symU = getUniqueSequences(osIn)
+    osK = np.asarray(osK, dtype=np.float64)
+    osP = osK / np.sum(osK)    
+    
+    iid = np.where(osP < pCut)[0]
     osUDelete = [list(osU[ii]) for ii in iid]
     osOut = []
     for ss in osIn:
@@ -2653,20 +2456,25 @@ def RemoveRareSequences(osIn, pCut = 0.001):
 #   nStep, number of steps for computing the probabilities. 
 # Return
 #   PSteps, nStep x (nSym+1) matrix. PSteps[:,0] is the probability of ending at the steps. 
-def getStepProbability(osT,nSym,nSteps):
-    PSteps = zeros((nSteps,nSym+1))
+def getStepProbability(osT, nSym, nSteps):
+    PSteps = np.zeros((nSteps, nSym + 1))
+
     for ss in osT:
-        for istep in range(min(len(ss),nSteps)):
-            PSteps[istep,ss[istep]] += 1
-        if istep < nSteps:  # end symbol
-            PSteps[istep,0] += 1
-    # normalize
+        L = min(len(ss), nSteps)
+
+        for istep in range(L):
+            PSteps[istep, ss[istep]] += 1
+
+        if L < nSteps:
+            PSteps[L, 0] += 1
+
     for ii in range(nSteps):
-        ssm = sum(PSteps[ii,:])
+        ssm = np.sum(PSteps[ii, :])
         if ssm > 0:
-            PSteps[ii,:] /= ssm
+            PSteps[ii, :] /= ssm
         else:
-            PSteps[ii,0] = 1 
+            PSteps[ii, 0] = 1.0
+
     return PSteps
 
 # blance load on multiple process, returns arrar of number of computations each process should handle. 
@@ -2676,7 +2484,7 @@ def getStepProbability(osT,nSym,nSteps):
 #   nProc - number of processors
 #  reurns
 #   NS - list of length nProc, number of tasks assinged to each processor
-def computeNumTasksProc(nTot, nProc = 2):
+def computeNumTasksProc(nTot, nProc = nProc):
     nS = int(nTot/nProc)
     nR = nTot - nS * nProc
     NS = [nS for ii in range(nProc)]
@@ -2692,11 +2500,11 @@ def computeNumTasksProc(nTot, nProc = 2):
 # Returns:
 #   Pc - sequence completeness
 def getSequenceCompletenessSampleToSample(osRef, osIn):
-    
-    osUR,osKR,symUR = getUniqueSequences(osRef)
-    PR = osKR/sum(osKR)
-    
 
+    osUR, osKR, symUR = getUniqueSequences(osRef)
+    osKR = np.asarray(osKR, dtype=np.float64)
+    PR = osKR / np.sum(osKR)
+    
     osU,osK,symU = getUniqueSequences(osIn)
     Pc = 0
     for ss in osU:
@@ -2719,7 +2527,7 @@ def plotSequenceLengthDistribution(seqs,fn=''):
     Bins = [0.5]
     for ii in range(mmax):
         Bins.append(ii+0.5)
-    yy,xx=histogram(LL,bins=Bins)
+    yy,xx = np.histogram(LL,bins=Bins)
     xx = (xx[1:] +xx[:-1])/2
     plt.figure()
     plt.bar(xx,yy,color='gray')
@@ -2733,7 +2541,7 @@ def plotSequenceLengthDistribution(seqs,fn=''):
 # plotProbDistribution(Ps,ylimMax=-1,xlimlow=0, width=0.02, xticks = [0,0.2,0.4,0.6,0.8,1],yticks = []) 
 # plot sequence completeness in a nice way. 
 def plotProbDistribution(Ps,ylimMax=-1,xlimlow=0, width=0.02, xticks = [0,0.2,0.4,0.6,0.8,1],yticks = []):
-    cc,bb = histogram(Ps,bins=20)
+    cc,bb = np.histogram(Ps,bins=20)
     plt.bar(bb[:-1],cc,width=width,color='gray')
     plt.axis('off')
     plt.plot([xlimlow,1],[0,0],color='k')
@@ -2750,7 +2558,7 @@ def plotProbDistribution(Ps,ylimMax=-1,xlimlow=0, width=0.02, xticks = [0,0.2,0.
         plt.plot([-tlen,0],[tt,tt],color='k')
         plt.text(-tlen-0.01,tt,str(tt),horizontalalignment='right',verticalalignment='center')
     txt='median P= {P:.2f}'
-    plt.text(0.5,ylim[1]/2,txt.format(P=median(Ps)))
+    plt.text(0.5,ylim[1]/2,txt.format(P = np.median(Ps)))
     
 # plot two POMM models in a way such that the corresponding states occupy the same positions. 
 # parameteres:
@@ -2766,25 +2574,21 @@ def plotTwoPOMMsStateCorrespondences(S1In,P1In,Syms21,S2In,P2In,Syms22,StateCorr
     
     # check consistency
     print('Checking consistency of state correspondence...')
-    ss = unique(StateCorres21.keys())
-    for ii in ss:
-        if  len(where(StateCorres21.keys() == ii)[0])>1:
-            print('ERROR in plotTwoPOMMsStateCorrespondences: Dupilcating state indices in StateCorres. Exit.')
+
+    keys = np.array(list(StateCorres21.keys()))
+    vals = np.array([StateCorres21[k] for k in keys])
+
+    # A Python dict cannot actually contain duplicate keys, so this is mostly redundant.
+    for ii in np.unique(keys):
+        if np.sum(keys == ii) > 1:
+            print('ERROR in plotTwoPOMMsStateCorrespondences: Duplicating state indices in StateCorres. Exit.')
             exit(1)
-    ss2 = [StateCorres21[ii] for ii in StateCorres21.keys()]
-    ss = unique(ss2)
-    for ii in ss:
-        if  len(where(ss2 == ii)[0])>1:
-            print('ERROR in plotTwoPOMMsStateCorrespondences: Dupilcating state indices in StateCorres. Exit.')
-            exit(1) 
-    
-    for ii in StateCorres21.keys():
-        jj = StateCorres21[ii]
-        if Syms22[S2[ii]] != Syms21[S1[jj]]:
-            print('ERROR in plotTwoPOMMsStateCorrespondences: the symbols of corresponding states in StateCorres do not match.')
-            print(' ii=',ii,'sym in POMM2: ',Syms22[S2[ii]],' jj=',jj,' sym in POMM1:',Syms21[S1[jj]])
-            exit(1)
-    
+
+    for ii in np.unique(vals):
+        if np.sum(vals == ii) > 1:
+            print('ERROR in plotTwoPOMMsStateCorrespondences: Duplicating target state indices in StateCorres. Exit.')
+            exit(1)    
+        
     labelStates = 0 # if state labels needed set to 1. 
     
     # create .dot file. 
@@ -2822,7 +2626,7 @@ def plotTwoPOMMsStateCorrespondences(S1In,P1In,Syms21,S2In,P2In,Syms22,StateCorr
 
         # get the syllables with multiple states
         symsMulti = []  
-        SU = unique(S[2:])
+        SU = np.unique(S[2:])
         for ss in SU:
             kk = 0
             for ss2 in S[2:]:
@@ -2959,7 +2763,7 @@ def plotTwoPOMMsStateCorrespondences(S1In,P1In,Syms21,S2In,P2In,Syms22,StateCorr
                         edgeProb.append(P[ii,jj])
                 
             # sort the edges
-            iid = argsort(edgeProb)
+            iid = np.argsort(edgeProb)
             for kk in iid:
                 II1,II2,cl,pw = edgeLists[kk]
                 p = edgeProb[kk]    
@@ -2976,51 +2780,6 @@ def plotTwoPOMMsStateCorrespondences(S1In,P1In,Syms21,S2In,P2In,Syms22,StateCorr
     command = ['dot', '-Tps', 'temp.dot', '-o', filenamePS]     # this is for linux
     call(command)
 
-# test how the C codes handle matrices
-# In C: getModifiedSequenceCompletenessSamplingModelC(int nSeqs, int N, int *S, double *P, int nSample, double *PBs, double beta, int randSeed)
-# Uncommeny 
-#   //printf("\nIn C getModifiedSequenceCompletenessSamplingModelC  \n");
-#   //PrintTransitionMatrix(N,P);
-def testMatrixFormInCCodes():           
-    
-    S = [0, -1, 1, 2, 3, 4, 5]
-    
-    N = len(S)
-    P =zeros((N,N))
-    
-    P[0,2] = 0.5
-    P[0,3] = 0.5
-    P[2,1] = 0.33
-    P[2,4] = 0.67
-    P[3,2] = 0.2
-    P[3,4] = 0.8
-    P[4,5] = 0.25
-    P[4,6] = 0.75
-    P[5,1] = 1
-    P[6,1] = 1
-    
-    osIn = generateSequencePOMM(S,P,100)
-    nSeq = len(osIn)
-    
-    print('\n\nTesting one...')
-
-    syms = [1,2,3,4,5]
-    P2, S2, C = ConstructMarkovModel(osIn,syms,pcut = 0.0)
-    
-    print(S2)
-    printP(P2)          
-
-    print(' Testing getModifiedSequenceCompletenessSamplingModelC')
-    nSeq = len(osIn)
-    PBs = getModifiedSequenceCompletenessSamplingModelC((S2,P2,nSeq,1))
-        
-    print('\n\nTesting two...')
-    
-    print(S)
-    printP(P)           
-
-    print(' Testing getModifiedSequenceCompletenessSamplingModelC')
-    PBs = getModifiedSequenceCompletenessSamplingModelC((S,P,nSeq,1))
 
 # break up the sequences according to syllables in motifSyllabels. 
 # returns a dictionnary of motif sequences motifSeqs
@@ -3059,7 +2818,7 @@ def getLabels(seqs):
         
 
 # connstruct POMMs for each motif sequences.    
-def constructPOMMsMotifSeqs(motifSeqs,nRerun=100,pValue=0.05,nProc=2,nSample=10000):
+def constructPOMMsMotifSeqs(motifSeqs,nRerun=100,pValue=0.05,nSample=10000):
     
     motifPOMMs = {}
     motifPOMMs['motifLabels'] = motifSeqs['motifLabels']
@@ -3077,7 +2836,7 @@ def constructPOMMsMotifSeqs(motifSeqs,nRerun=100,pValue=0.05,nProc=2,nSample=100
             print(ss,' ',end="")
         print(' ')
         
-        osIn, repeatNumSeqs, symsNumeric = getNumericalSequencesNonRepeat(seqs,labels) 
+        osIn, repeatNumSeqs, symsNumeric, _ = getNumericalSequencesNonRepeat(seqs,labels)       
         Syms2 = {}
         Syms2R = {}
         symsNumeric = list(symsNumeric)
@@ -3087,7 +2846,12 @@ def constructPOMMsMotifSeqs(motifSeqs,nRerun=100,pValue=0.05,nProc=2,nSample=100
         motifPOMMs[sym]['Syms2'] = Syms2
         motifPOMMs[sym]['Syms2R'] = Syms2R
         #get the POMM. 
-        S2, P, pv, PBs, PbT, Pc = NGramPOMMSearch(osIn,nRerun=nRerun,pValue=pValue,nProc=nProc,nSample =nSample)
+        S2, P, pv, PBs, PbT = NGramPOMMSearch(
+            osIn,
+            pValue=pValue,
+            nSample=nSample,
+        )
+        
         S = [0,-1]
         for ss in S2[2:]:
             S.append(Syms2[ss])             
@@ -3109,12 +2873,12 @@ def printSequences(osIn, Syms2):
             ssq += ' '+Syms2[ss]
         print(ssq)      
         kk += 1
-        if mod(kk,10) == 0:
+        if kk % 10 == 0:
             print(' ')
         
 
 # get the POMM with the motif sequences.        
-def getMotifPOMM(osIn,motifSyllabels,nRerun=100,pValue=0.05,nProc=2,nSample=10000):
+def getMotifPOMM(osIn,motifSyllabels,nRerun=100,pValue=0.05,nSample=10000):
     print('\nGetting motif sequences ...')
     motifSeqs = []
     motifSeqsCollect = []
@@ -3135,9 +2899,15 @@ def getMotifPOMM(osIn,motifSyllabels,nRerun=100,pValue=0.05,nProc=2,nSample=1000
 
     # make thse motif sequences consecutive.    
     #osInM, symsM = convertToNumericalSequences(motifSeqs,motifSyllabels)
-    osInM, repeatNumSeqs, symsNumericM = getNumericalSequencesNonRepeat(motifSeqs,motifSyllabels)
+    osInM, repeatNumSeqs, symsNumericM, _ = getNumericalSequencesNonRepeat(motifSeqs,motifSyllabels)
     print('Using N-gram method to get the motif level POMM...')
-    S, Pm, pv, PBs, PbT, Pc = NGramPOMMSearch(osInM,nRerun=nRerun,pValue=pValue,nProc=nProc,nSample=nSample)
+
+    S, Pm, pv, PBs, PbT = NGramPOMMSearch(
+        osInM,
+        pValue=pValue,
+        nSample=nSample,
+    )
+        
     Sm = [0,-1]
     for ss in S[2:]:
         Sm.append(motifSyllabels[ss-1])
@@ -3147,19 +2917,19 @@ def getMotifPOMM(osIn,motifSyllabels,nRerun=100,pValue=0.05,nProc=2,nSample=1000
 # Inputs:
 #   osIn - sequences non-repeat, numerical sequences
 #   motifSyllabels - starting syllables for motifs, including the start syllables from the sequences. 
-#   nRerun,pValue,nProc,nSample - the usual parameters. 
+#   nRerun,pValue,nSample - the usual parameters. 
 # Returns S, P, pv, PBs, PbT
 #   S - state vector
 #   P - transition probabilities.   
 #   pv - pValue
 #   PBs - sampled Pb
 #   PbT - Pb of the original seqeuences. 
-def MinPOMMmotif(osIn,motifSyllabels,nRerun=100,pValue=0.05,nProc=nProc,nSample=10000):
+def MinPOMMmotif(osIn,motifSyllabels,nRerun=100,pValue=0.05,nSample=10000):
 
     startSyms = getStartingSyllables(osIn)
-    motifSyllabels = list(unique(motifSyllabels + startSyms))
+    motifSyllabels = list(np.unique(motifSyllabels + startSyms))
 
-    Sm, Pm, motifSeqs, motifSeqsCollect = getMotifPOMM(osIn,motifSyllabels,nRerun=nRerun,pValue=pValue,nProc=nProc,nSample=nSample)
+    Sm, Pm, motifSeqs, motifSeqsCollect = getMotifPOMM(osIn,motifSyllabels,nRerun=nRerun,pValue=pValue,nSample=nSample)
     print('Motif level POMM Sm=',Sm)
         
     # get the motif sequences. 
@@ -3177,66 +2947,23 @@ def MinPOMMmotif(osIn,motifSyllabels,nRerun=100,pValue=0.05,nProc=nProc,nSample=
             mSeqs[ss].append(motifSeqsCollect[ii][jj])
 
     # construct motif sequences.        
-    motifPOMMs = constructPOMMsMotifSeqs(mSeqs,nRerun=nRerun,pValue=pValue,nProc=nProc,nSample=nSample)
+    motifPOMMs = constructPOMMsMotifSeqs(mSeqs,nRerun=nRerun,pValue=pValue,nSample=nSample)
 
     S = []
     for ii in range(2,len(Sm)):
         SS = motifPOMMs[ii]['S']
         S += SS[2:]
-    S = list(sort(S))
+    S = list(np.sort(S))
     S = [0,-1] + S
     print('After merging motif POMMs S=',S) 
 
     # simplify by deleting states       
-    S, P, pv, PBs, PbT, Pc = MinPOMMSimpDeleteStates(S,osIn,nProc=nProc,nRerun=nRerun,nSample=nSample)          
+    S, P, pv, PBs, PbT, Pc = MinPOMMSimpDeleteStates(S,osIn,nRerun=nRerun,nSample=nSample)          
     print('After state deletion pv=',pv)
     
     return S, P,  pv, PBs, PbT
-            
-
-# get unique sequences for POMM given S, P, calling C function  
-def getUniqueSeqsProbsPOMM(S,P):
-
-    N = len(S)
-        
-    # set parameter types   
-    lib.getUniqueSeqProbsPOMM.argtypes = [
-                ctypes.c_long,  
-                ctypes.POINTER(ctypes.c_long), 
-                ctypes.POINTER(ctypes.c_double)
-    ]       
-    lib.getUniqueSeqProbsPOMM.restype = ctypes.POINTER(ctypes.c_double)
-    # call the C function.
-    S = array(S,dtype=int)
-    seqProbs = lib.getUniqueSeqProbsPOMM(
-                ctypes.c_long(N),
-                S.ctypes.data_as(ctypes.POINTER(ctypes.c_long)), 
-                P.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
-    )
-    nU = int(seqProbs[0])
-    
-    pU = [seqProbs[i] for i in range(1,nU+1)]
-        
-    lib.freeArray.argtypes = [ctypes.POINTER(ctypes.c_double)]  
-    lib.freeArray(seqProbs)
-    
-    return nU, pU
-    
-    
-def testGetUniqueSeqsProbsPOMM():
-                    
-    SO, PO = getTestModel(iModel = 1)           
                 
-    nU, pU = getUniqueSeqsProbsPOMM(SO,PO)
-    print('Found ',nU,' unique sequences. ')
-    print('Ptot = ',"{:.2f}".format(sum(pU)))
-
-    # print prob in a nice way. 
-    formatted_list = ["{:.5f}".format(x) for x in pU]
-    formatted_list_string = ', '.join(formatted_list)
-    print('Probs = ',formatted_list_string)
-    
-    
+        
 """
 
 Models used for testing. 
@@ -3262,7 +2989,7 @@ def getTestModel(iModel = 1):
         Syms = {'A':1,'B':2,'C':3,'D':4,'E':5}
         Syms2 = {1:'A',2:'B',3:'C',4:'D',5:'E'}
         # state transition probabilities
-        PO = zeros((N,N))
+        PO = np.zeros((N,N))
         PO[0,2] = 0.5
         PO[0,3] = 0.5
         PO[2,4] = 0.8
@@ -3285,7 +3012,7 @@ def getTestModel(iModel = 1):
         Syms = {'A':1,'B':2,'C':3}
         Syms2 = {1:'A',2:'B',3:'C'}
         # state transition probabilities
-        PO = zeros((N,N))
+        PO = np.zeros((N,N))
         PO[0,2] = 0.5
         PO[0,3] = 0.5
         PO[2,3] = 1.0/3
@@ -3304,7 +3031,7 @@ def getTestModel(iModel = 1):
         Syms = {'A':1,'B':2,'C':3,'D':4,'E':5}
         Syms2 = {1:'A',2:'B',3:'C',4:'D',5:'E'}
         # state transition probabilities
-        PO = zeros((N,N))
+        PO = np.zeros((N,N))
         PO[0,2] = 0.5
         PO[0,3] = 0.5
         PO[2,4] = 1
@@ -3323,7 +3050,7 @@ def getTestModel(iModel = 1):
         Syms = {'A':1,'B':2,'C':3,'D':4,'E':5}
         Syms2 = {1:'A',2:'B',3:'C',4:'D',5:'E'}
         # state transition probabilities
-        PO = zeros((N,N))
+        PO = np.zeros((N,N))
         PO[0,2] = 0.5
         PO[0,3] = 0.5
         PO[2,4] = 0.53
@@ -3339,7 +3066,7 @@ def getTestModel(iModel = 1):
         # model for sequence generation
         SS = [0,-1,'a','b','c','a','c','d','e','b','c','e','c','d']
         N = len(SS)
-        PO = zeros((N,N))
+        PO = np.zeros((N,N))
         PO[0,2] = 1
         PO[2,3] = 1
         PO[3,4] = 1
@@ -3402,7 +3129,7 @@ def constructSymP(osIn, sym, ng):
                 rseq = seq[ii+1:min(nn,ii+1+ng)] 
                 
                 #print('    l=',lseq, ' r=',rseq)
-                
+
                 if lseq in uniqueSeqsLeft:
                     i = uniqueSeqsLeft.index(lseq)
                 else:
@@ -3414,7 +3141,7 @@ def constructSymP(osIn, sym, ng):
                 else:
                     uniqueSeqsRight.append(rseq)
                     j = len(uniqueSeqsRight) - 1
-                
+                                
                 if (i,j) in transitionsCounts.keys():                   
                     transitionsCounts[(i,j)] += 1
                 else:
@@ -3424,8 +3151,8 @@ def constructSymP(osIn, sym, ng):
     #print(uniqueSeqsRight)
     #print(transitionsCounts)
     
-    PB = zeros((len(uniqueSeqsLeft),len(uniqueSeqsRight)))
-    MM = zeros(len(uniqueSeqsLeft))
+    PB = np.zeros((len(uniqueSeqsLeft),len(uniqueSeqsRight)))
+    MM = np.zeros(len(uniqueSeqsLeft))
     for i in range(len(uniqueSeqsLeft)):
         for j in range(len(uniqueSeqsRight)):
             if (i,j) in transitionsCounts.keys():
@@ -3434,7 +3161,7 @@ def constructSymP(osIn, sym, ng):
     
     #print('PB:')
     #print(PB)
-    PB = array(PB,dtype=float64)
+    PB = np.array(PB,dtype=np.float64)
     # scale
     for i in range(len(uniqueSeqsLeft)):
         PB[i,:] /=MM[i]
@@ -3472,21 +3199,21 @@ def constructSymPuniqueSeqs(osU, osK, sym, ng):
                 else:
                     uniqueSeqsRight.append(rseq)
                     j = len(uniqueSeqsRight) - 1
-                
+                    
                 if (i,j) in transitionsCounts.keys():                   
                     transitionsCounts[(i,j)] += cc
                 else:
                     transitionsCounts[(i,j)] = cc
                         
-    PB = zeros((len(uniqueSeqsLeft),len(uniqueSeqsRight)))
-    MM = zeros(len(uniqueSeqsLeft))
+    PB = np.zeros((len(uniqueSeqsLeft),len(uniqueSeqsRight)))
+    MM = np.zeros(len(uniqueSeqsLeft))
     for i in range(len(uniqueSeqsLeft)):
         for j in range(len(uniqueSeqsRight)):
             if (i,j) in transitionsCounts.keys():
                 PB[i,j] = transitionsCounts[(i,j)]
                 MM[i] += PB[i,j] 
     
-    PB = array(PB,dtype=float64)
+    PB = np.array(PB,dtype=np.float64)
     # scale
     for i in range(len(uniqueSeqsLeft)):
         PB[i,:] /=MM[i]
@@ -3538,49 +3265,13 @@ def getStateVecUsingRanks(osIn, symsNumeric, ng, cutOff = 0.1):
             singular_values = svd.singular_values_
             singular_values /= singular_values[0]
             
-            nS = len(where(singular_values > cutOff)[0])
+            nS = len(np.where(singular_values > cutOff)[0])
         print('     numStates = ',nS)
         for i in range(nS):
             S.append(sym)
     print(' estimated S=',S)
     return S        
                 
-    
-def testConstructSymP():
-        
-    S, P = getTestModel(iModel = 5)
-    
-    ng = 4          # n gram size. 
-    
-    nSeq = 90
-    seqsOrig = generateSequencePOMM(S,P,nSeq)
-    sylLabels = list(unique(S[2:]))
-        
-    osIn, repeatNumSeqs, symsNumeric = getNumericalSequencesNonRepeat(seqsOrig,sylLabels) 
-    osU, osK, symU = getUniqueSequences(osIn)
-
-    for sym in symsNumeric:
-        print('Getting PB for sym full sequence method=',sym)
-        PB = constructSymP(osIn, sym, ng-1)         
-        print(PB)   
-        print('Getting PB for sym unique sequences method=',sym)        
-        PB = constructSymPuniqueSeqs(osU, osK, sym, ng)
-        print(PB)
-        print(' ')
-
-def testGetStateVecUsingRanks():
-                        
-    S, P = getTestModel(iModel = 4)
-    
-    ng = 2          # n gram size. 
-    
-    nSeq = 200
-    seqsOrig = generateSequencePOMM(S,P,nSeq)
-    sylLabels = list(unique(S[2:]))
-        
-    osIn, repeatNumSeqs, symsNumeric = getNumericalSequencesNonRepeat(seqsOrig,sylLabels) 
-    
-    SE = getStateVecUsingRanks(osIn, symsNumeric, ng, cutOff = 0.1)
     
 """
 
@@ -3672,7 +3363,7 @@ def PBRankPOMM(osIn, ngramStart = 1, fnSave=''):
                 pool.close()
                 pool.join()     
                 ML = [ml for (ml, P) in res]
-                ML = array(ML)
+                ML = np.array(ML)
                 iid = ML.argmax()
                 P = res[iid][1]
             
@@ -3744,7 +3435,7 @@ def getApproxPBRank(ranksRets,osU,osK,sym,ng,cutOffs):
                 # Access the singular values
                 singular_values = svd.singular_values_
                 singular_values /= singular_values[0]               
-                nS = len(where(singular_values > cutOff)[0])
+                nS = len(np.where(singular_values > cutOff)[0])
 
         ranksRets[ic][sym-1] = nS
     
@@ -3767,9 +3458,9 @@ def testPBRankPOMM():
     
     nSeq = 200
     seqsOrig = generateSequencePOMM(S,P,nSeq)
-    sylLabels = list(unique(S[2:]))
+    sylLabels = list(np.unique(S[2:]))
                         
-    osIn, repeatNumSeqs, symsNumeric = getNumericalSequencesNonRepeat(seqsOrig,sylLabels) 
+    osIn, repeatNumSeqs, symsNumeric, _ = getNumericalSequencesNonRepeat(seqsOrig,sylLabels) 
 
     PBRankPOMM(osIn, ngramStart = 2, fnSave='testPBRankPOMM.dat')   
     
@@ -3826,10 +3517,10 @@ def PBnGramSearch(osIn, ngramStart = 1, fnSave=''):
     
     
     # test merge states.
-    syms = list(unique(S[2:]))
+    syms = list(np.unique(S[2:]))
     
     for sm in syms:
-        iid = where(sm == array(S))[0]
+        iid = np.where(sm == np.array(S))[0]
         if len(iid) <= 1:
             continue
         print(' Test merging states for sym  = ',sm)
@@ -3858,7 +3549,7 @@ def PBnGramSearch(osIn, ngramStart = 1, fnSave=''):
                     nGramInds[ss] = len(nGramInds.keys())
                     
         M = len(nGramInds.keys())
-        PB = zeros((len(iid),M))
+        PB = np.zeros((len(iid),M))
         for i in range(len(iid)):
             seqs, probs = results[i]
             for kk in range(len(seqs)):
@@ -3866,10 +3557,10 @@ def PBnGramSearch(osIn, ngramStart = 1, fnSave=''):
                 pp = probs[kk]
                 jj = nGramInds[ss]
                 PB[i,jj] = pp
-            PB[i,:] /= sum(PB[i,:]) 
+            PB[i,:] /= np.sum(PB[i,:]) 
         
         for i in range(len(iid)):
-            PB[i,:] /= sqrt(sum(PB[i,:] * PB[i,:]))
+            PB[i,:] /= np.sqrt(np.sum(PB[i,:] * PB[i,:]))
         
         t2 = time.time()
         print('     Getting PB used ',t2-t1,' sec')
@@ -3897,7 +3588,7 @@ def PBnGramSearch(osIn, ngramStart = 1, fnSave=''):
                     if jj in iidsToDelete:
                         continue
                     # check if this should be merged. 
-                    cc = 1 - sum(PB[i,:] * PB[j,:])
+                    cc = 1 - np.sum(PB[i,:] * PB[j,:])
                                     
                     if cc < ccMerge:
                         print('     merging states (',ii,jj,') sym=',sm)
@@ -3939,12 +3630,12 @@ def PBnGramSearch(osIn, ngramStart = 1, fnSave=''):
                 if pvTest > pValue:
                     print('     merge accepted pv=',round(pv,3))
                     SnumVis = SnumVisTest.copy()
-                    iidsToDelete = list(sort(iidsToDelete))
+                    iidsToDelete = list(np.sort(iidsToDelete))
                     P = PTest.copy()
                     for jj in iidsToDelete[::-1]:
                         S = S[:jj] + S[jj+1:]
-                        P = delete(P,jj,axis=0)
-                        P = delete(P,jj,axis=1)
+                        P = np.delete(P,jj,axis=0)
+                        P = np.delete(P,jj,axis=1)
                         SnumVis = SnumVis[:jj] + SnumVis[jj+1:]
                     pv = pvTest
                     PBs = PBsTest
@@ -3997,12 +3688,12 @@ def computePBFromSym(S,P,ng,iState,results,i):
             for jj in range(N):
                 p = P[ids,jj]
                 if p > pTolence: 
-                    logP = logProb + log(p)
+                    logP = logProb + np.log(p)
                     seq2 = seq + [S[jj]]
                     
                     if jj == 1: # this is the end state. 
                         nGramSeqs.append(seq2)
-                        nGramProbs.append(exp(logP))
+                        nGramProbs.append(np.exp(logP))
                         
                     else:
                         fStates.append(jj)
@@ -4022,7 +3713,7 @@ def computePBFromSym(S,P,ng,iState,results,i):
         seq = frontSeqs[kk]
         logProb = frontLogProbs[kk]
         nGramSeqs.append(seq)
-        nGramProbs.append(exp(logProb))
+        nGramProbs.append(np.exp(logProb))
 
     results[i] = [nGramSeqs,nGramProbs]     
     
@@ -4034,9 +3725,9 @@ def testPBnGramSearch():
     
     nSeq = 100
     seqsOrig = generateSequencePOMM(S,P,nSeq)
-    sylLabels = list(unique(S[2:]))
+    sylLabels = list(np.unique(S[2:]))
                         
-    osIn, repeatNumSeqs, symsNumeric = getNumericalSequencesNonRepeat(seqsOrig,sylLabels) 
+    osIn, repeatNumSeqs, symsNumeri, _ = getNumericalSequencesNonRepeat(seqsOrig,sylLabels) 
     
     S, P, pv, PBs, PbT = PBnGramSearch(osIn, ngramStart = 2, fnSave='testPBnGramSearch.dat')
         
@@ -4044,23 +3735,6 @@ def testPBnGramSearch():
                     
 if __name__ == "__main__":
     
-    #testComputeMostProbableStateSequence()
-        
-    #testGetModifiedSequenceCompletenessSamplingModelC()
-    
-    #testMatrixFormInCCodes()
-    
-    #testCheckEndStateReachability()
-        
-    #testGetUniqueSeqsProbsPOMM()
-    
-    #testConstructNGramPOMM
-    
-    #testComputeSeqProbPOMMC()
-    
-    #testConstructSymP()
-    
-    #testGetStateVecUsingRanks()
     
     #testPBRankPOMM()
     

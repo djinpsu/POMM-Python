@@ -11,8 +11,6 @@ import matplotlib
 import numpy as np
 matplotlib.rcParams['font.family'] = 'Times'
 
-nProc = 2
-
 ### common parameters
 maxIterBW = 1000			# maximum iterations in BW algorithm
 nRerunBW = 100				# number of re-runs of BW algorithm
@@ -25,10 +23,14 @@ random.seed(datetime.now().timestamp())
 
 def main():
 
-    fn = '0mA_annot_observed_sequences.txt'
-    #fn = '150mA_u_left_tl.annot_observed_sequences.txt'
-    seqs, syllableLabels = getSequences(fn)
+    #fn = '0mA_annot_observed_sequences.txt'
+    fn = '150mA_u_left_tl.annot_observed_sequences.txt'
     
+    #fn = 'bird_022012/200mA_u_bilateral_tl.annot_observed_sequences.txt'
+    #fn = 'bird_022012/0mA_u_tl.annot_observed_sequences.txt'
+    
+    seqs, syllableLabels = getSequences(fn)
+        
     if 1: # learn POMM from sequences
 
         filenameSave = f'{fn}.POMM.dat'
@@ -47,17 +49,17 @@ def main():
 
         fnFig = f'{filenameSave}.pdf'
         print(f'Saving transition diagram to {fnFig}')
-        plotTransitionDiagram(S2,P,Pcut=0.01,filenamePDF=fnFig, \
-                removeUnreachable=False,markedStates=[])                    
+        plotTransitionDiagram(S2,P,Pcut=0.001,filenamePDF=fnFig, \
+                removeUnreachable=False,markedStates=[],labelStates=0)                    
         os.system(f'open {fnFig}')
             
 
 def learnPOMM(seqs, syllableLabels, filenameSave, stateMergeParam=[0.25,0.01,0.01], Pcut=0.001):
-
+    
     osIn, repeatNumSeqs, Syms, Syms2 = getNumericalSequencesNonRepeat(seqs, syllableLabels)
 
     print('print inferring POMM using the N-gram method ...')
-    S, P, pv, PBs, PbT = NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=stateMergeParam, Pcut=Pcut, nProc=nProc,nSample =nSample)
+    S, P, pv, PBs, PbT = NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=stateMergeParam, Pcut=Pcut, nSample =nSample)
                                                         
     savePOMM(filenameSave, S, P, pv, PBs, PbT, osIn, Syms, Syms2)
 
