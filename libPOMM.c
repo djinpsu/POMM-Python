@@ -11,32 +11,17 @@ Implementing libPOMM.h
 #include <stddef.h> // For size_t
 #include <pthread.h> //multi thread
 
-// A simple implementation of the logsumexp function.
+
+void logZeros(int n, int m, double *M) { for (int i=0;i<n*m;i++) M[i] = -INFINITY; }
+
 double logsumexp(const double* x, size_t n) {
-    double max_val = -DBL_MAX;
+    double max_val = -INFINITY;
+    for (size_t i=0;i<n;i++) if (x[i] > max_val) max_val = x[i];
+    if (isinf(max_val) && max_val < 0) return -INFINITY;   // all inputs were log(0)
     double sum = 0.0;
-
-    // First, find the maximum value in the input array.
-    for (size_t i = 0; i < n; ++i) {
-        if (x[i] > max_val) {
-            max_val = x[i];
-        }
-    }
-
-    // If the max value is extremely negative, return it to avoid underflow.
-    if (max_val == -DBL_MAX) {
-        return max_val;
-    }
-
-    // Compute the sum of the exponentials of the input elements, scaled by the max value.
-    for (size_t i = 0; i < n; ++i) {
-        sum += exp(x[i] - max_val);
-    }
-
-    // Return the log of the computed sum, adjusted by the max value.
+    for (size_t i=0;i<n;i++) sum += exp(x[i] - max_val);
     return max_val + log(sum);
 }
-
 
 int getIndex(int i, int j, int N) {
 	return i*N + j;
@@ -99,15 +84,6 @@ void zeros(int n, int m, double *M)
 	int i;
 	for (i=0; i<n*m; i++) M[i] = 0.0;
 }
-
-//set all matrix elements to -DBL_MAX. 
-void logZeros(int n, int m, double *M) 
-{
-	int i;
-	for (i=0; i<n*m; i++) M[i] = -DBL_MAX;
-}
-
-
 
 //print transition matrix. 
 void PrintTransitionMatrix(int N, double * P)
@@ -178,38 +154,73 @@ void GetUniqueSequences(int nSeq, int *osIn, int *nSeqU, int *osU, int *nUnique,
 	(*nSeqU) = nSU;
 }
 
-//2026-3-26, fixed the problem. if P(i,j) = 0, it will remain 0. 
+/* 2026-5-09, two-phase sparsity:
+   Phase 1: EM with Dirichlet MAP (alpha < 1) prunes edges. Pruning is
+            permanent. Phase 1 exits once the support has been stable for
+            stableNeeded consecutive iterations and parameter change is
+            below pTol.
+   Phase 2: pure EM (no Dirichlet, no pruning) on the frozen support, run
+            to a tight tolerance to remove the Dirichlet bias from surviving
+            edge probabilities.
+   Final:   one extra forward-only pass to compute llk under the final P
+            (rather than under the second-to-last P).
+
+   Parameters:
+     alpha        : Dirichlet hyperparameter for phase 1. alpha < 1 induces
+                    sparsity. Pass 1.0 to disable phase 1 pruning.
+     burnIn       : phase 1 iterations before any pruning is allowed.
+     stableNeeded : consecutive non-pruning iterations required to declare
+                    phase 1 converged. Typical: 3.
+     pTolPhase2   : tighter tolerance for phase 2. Typical: 1e-7 or 1e-8.
+     nUnreachable : output, number of sequences with A0 == 0 under final P. */
+
+static void run_em_iteration(int nSeq, int *osIn, int *osK, int N,
+                             int *stateSyms, double *P, int *allowed,
+                             int maxSL, double *logA, double *logB,
+                             double *PO, double *x, int *os,
+                             double *llkOut, double *mmaxOut,
+                             int applySparsity, double alpha,
+                             int *prunedThisIter, int *nUnreachableOut);
+
+static double compute_llk(int nSeq, int *osIn, int *osK, int N,
+                          int *stateSyms, double *P, int *allowed,
+                          double *logA, double *x, int *os,
+                          int *nUnreachableOut);
+
+
 double BWPOMMC(int nSeq, int *osIn, int nU, int *osK, int N, int *stateSyms,
-               double *P, double pTol, int maxIter, int randSeed)
+               double *P, double pTol, int maxIter, int randSeed,
+               double alpha, int burnIn, int stableNeeded,
+               double pTolPhase2, int *nUnreachable)
 {
-    int i, j, iid, maxSL, sl, lb, istep, kk, ik, T, t, iU;
-    double A0, mmax;
+    int i, istep;
+    int prunedThisIter, stableCount;
+    int nUnr = 0;
+    double mmax;
     double *logA, *logB, *PO, *x;
     int *os;
     int *allowed;
+    int maxSL;
     double llk = 0.0;
 
     if (randSeed != -1) {
         srand((unsigned int)randSeed);
     }
 
-    /* Structural mask: transitions initially > 0 are allowed forever.
-       Initial zeros remain forbidden forever. */
     allowed = (int *) malloc(N * N * sizeof(int));
     if (allowed == NULL) {
-        return -INFINITY;   /* or handle error */
-    }       
+        if (nUnreachable) *nUnreachable = -1;
+        return -INFINITY;
+    }
     for (i = 0; i < N * N; i++) {
         allowed[i] = (P[i] > 0.0) ? 1 : 0;
     }
-    /* hard structural constraints */
-    allowed[getIndex(0,1,N)] = 0;   /* no start -> end */
+    allowed[getIndex(0,1,N)] = 0;
     for (i = 0; i < N; i++) {
-        allowed[getIndex(i,0,N)] = 0;   /* no -> start */
-        allowed[getIndex(1,i,N)] = 0;   /* no outgoing from end */
-    }    
+        allowed[getIndex(i,0,N)] = 0;
+        allowed[getIndex(1,i,N)] = 0;
+    }
 
-    /* Normalize initial P while preserving constraints. */
     for (i = 0; i < N * N; i++) {
         if (!allowed[i]) P[i] = 0.0;
     }
@@ -227,122 +238,45 @@ double BWPOMMC(int nSeq, int *osIn, int nU, int *osK, int N, int *stateSyms,
     if (maxSL > N) x = (double *) malloc(maxSL * sizeof(double));
     else           x = (double *) malloc(N * sizeof(double));
 
+    /* ============================================================
+       PHASE 1: EM with Dirichlet MAP pruning
+       ============================================================ */
+    stableCount = 0;
     for (istep = 0; istep < maxIter; istep++) {
-        zeros(N, N, PO);
-        kk = 0;
-        T = 0;
-        iU = 0;
-        llk = 0.0;
+        int doSparsity = (istep >= burnIn) && (alpha < 1.0);
 
-        while (kk < nSeq) {
-            for (ik = kk; ik < nSeq; ik++) {
-                lb = osIn[ik];
-                if (lb == 0) {
-                    os[0] = 0;
-                    T = 1;
-                } else if (lb == -1) {
-                    os[T++] = -1;
-                    break;
-                } else {
-                    os[T++] = lb;
-                }
-            }
-            if (lb != -1) break;
-            kk += T;
+        run_em_iteration(nSeq, osIn, osK, N, stateSyms, P, allowed,
+                         maxSL, logA, logB, PO, x, os,
+                         &llk, &mmax,
+                         doSparsity, alpha,
+                         &prunedThisIter, &nUnr);
 
-            /* Forward */
-            logZeros(N, T, logA);
-            logA[0] = 0.0;   /* state 0 at t=0 */
+        if (!prunedThisIter) stableCount++;
+        else                 stableCount = 0;
 
-            for (t = 1; t < T; t++) {
-                for (i = 0; i < N; i++) {
-                    if (stateSyms[i] == os[t]) {
-                        for (j = 0; j < N; j++) {
-                            iid = getIndex(j, i, N);
-                            if (allowed[iid] && P[iid] > 0.0) {
-                                x[j] = logA[getIndex2(j, t - 1, N, T)] + log(P[iid]);
-                            } else {
-                                x[j] = -INFINITY;
-                            }
-                        }
-                        logA[getIndex2(i, t, N, T)] = logsumexp(x, N);
-                    }
-                }
-            }
-
-            /* Backward */
-            logZeros(N, T, logB);
-            logB[getIndex2(1, T - 1, N, T)] = 0.0;   /* end state at final time */
-
-            for (t = T - 2; t > -1; t--) {
-                for (i = 0; i < N; i++) {
-                    if (stateSyms[i] == os[t]) {
-                        for (j = 0; j < N; j++) {
-                            iid = getIndex(i, j, N);
-                            if (allowed[iid] && P[iid] > 0.0) {
-                                x[j] = log(P[iid]) + logB[getIndex2(j, t + 1, N, T)];
-                            } else {
-                                x[j] = -INFINITY;
-                            }
-                        }
-                        logB[getIndex2(i, t, N, T)] = logsumexp(x, N);
-                    }
-                }
-            }
-
-            /* Sequence likelihood */
-            A0 = exp(logA[getIndex2(1, T - 1, N, T)]);
-            if (A0 == 0.0) {
-                iU++;
-                continue;
-            }
-
-            /* Expected transition counts */
-            for (i = 0; i < N; i++) {
-                for (j = 0; j < N; j++) {
-                    iid = getIndex(i, j, N);
-
-                    if (!allowed[iid] || P[iid] <= 0.0) {
-                        continue;
-                    }
-
-                    for (t = 0; t < T - 1; t++) {
-                        x[t] = logA[getIndex2(i, t, N, T)]
-                             + log(P[iid])
-                             + logB[getIndex2(j, t + 1, N, T)];
-                    }
-
-                    PO[iid] += osK[iU] * exp(logsumexp(x, T - 1)) / A0;
-                }
-            }
-
-            llk += logA[getIndex2(1, T - 1, N, T)] * osK[iU];
-            iU++;
-        }
-
-        /* Enforce forbidden edges before normalization */
-        for (i = 0; i < N * N; i++) {
-            if (!allowed[i]) PO[i] = 0.0;
-        }
-
-        norm(N, PO);
-
-        /* Enforce mask again after normalization */
-        for (i = 0; i < N * N; i++) {
-            if (!allowed[i]) PO[i] = 0.0;
-        }
-
-        mmax = 0.0;
-        for (i = 0; i < N * N; i++) {
-            if (fabs(PO[i] - P[i]) > mmax) mmax = fabs(PO[i] - P[i]);
-        }
-
-        for (i = 0; i < N * N; i++) {
-            P[i] = PO[i];
-        }
-
-        if (mmax < pTol) break;
+        if (stableCount >= stableNeeded && mmax < pTol) break;
     }
+
+    /* ============================================================
+       PHASE 2: pure EM on frozen support
+       ============================================================ */
+    for (istep = 0; istep < maxIter; istep++) {
+        run_em_iteration(nSeq, osIn, osK, N, stateSyms, P, allowed,
+                         maxSL, logA, logB, PO, x, os,
+                         &llk, &mmax,
+                         /*applySparsity=*/0, /*alpha=*/1.0,
+                         &prunedThisIter, &nUnr);
+
+        if (mmax < pTolPhase2) break;
+    }
+
+    /* ============================================================
+       FINAL: clean llk pass under the final P (forward only)
+       ============================================================ */
+    llk = compute_llk(nSeq, osIn, osK, N, stateSyms, P, allowed,
+                      logA, x, os, &nUnr);
+
+    if (nUnreachable) *nUnreachable = nUnr;
 
     free(logA);
     free(logB);
@@ -351,6 +285,291 @@ double BWPOMMC(int nSeq, int *osIn, int nU, int *osK, int N, int *stateSyms,
     free(x);
     free(allowed);
 
+    return llk;
+}
+
+
+static void normalize_PO_preserve_empty_rows(
+    int N,
+    double *PO,
+    double *Pold,
+    int *allowed
+) {
+    for (int i = 0; i < N; i++) {
+
+        /* End state: no outgoing transitions */
+        if (i == 1) {
+            for (int j = 0; j < N; j++) {
+                PO[getIndex(i, j, N)] = 0.0;
+            }
+            continue;
+        }
+
+        /* Structural constraints */
+        PO[getIndex(i, 0, N)] = 0.0;   /* no transition to start */
+        if (i == 0) {
+            PO[getIndex(0, 1, N)] = 0.0;  /* no start -> end */
+        }
+
+        double sum = 0.0;
+
+        for (int j = 0; j < N; j++) {
+            int iid = getIndex(i, j, N);
+
+            if (!allowed[iid]) {
+                PO[iid] = 0.0;
+            }
+
+            sum += PO[iid];
+        }
+
+        if (sum > 0.0) {
+            for (int j = 0; j < N; j++) {
+                int iid = getIndex(i, j, N);
+                PO[iid] /= sum;
+            }
+        } else {
+            /*
+               No expected outgoing counts from this state.
+               Preserve the previous row on the allowed support.
+            */
+            double oldsum = 0.0;
+
+            for (int j = 0; j < N; j++) {
+                int iid = getIndex(i, j, N);
+
+                if (allowed[iid]) {
+                    PO[iid] = Pold[iid];
+                    oldsum += PO[iid];
+                } else {
+                    PO[iid] = 0.0;
+                }
+            }
+
+            if (oldsum > 0.0) {
+                for (int j = 0; j < N; j++) {
+                    int iid = getIndex(i, j, N);
+                    PO[iid] /= oldsum;
+                }
+            }
+        }
+    }
+}
+
+/* ----------------------------------------------------------------
+   One full EM iteration (E-step + optional sparsity + M-step).
+   ---------------------------------------------------------------- */
+static void run_em_iteration(int nSeq, int *osIn, int *osK, int N,
+                             int *stateSyms, double *P, int *allowed,
+                             int maxSL, double *logA, double *logB,
+                             double *PO, double *x, int *os,
+                             double *llkOut, double *mmaxOut,
+                             int applySparsity, double alpha,
+                             int *prunedThisIter, int *nUnreachableOut)
+{
+    int i, j, iid, lb, kk, ik, T, t, iU;
+    int prunedFlag = 0;
+    int nUnr = 0;
+    double A0, mmax;
+    double llk = 0.0;
+
+    zeros(N, N, PO);
+    kk = 0;
+    T = 0;
+    iU = 0;
+
+    while (kk < nSeq) {
+        for (ik = kk; ik < nSeq; ik++) {
+            lb = osIn[ik];
+            if (lb == 0) {
+                os[0] = 0;
+                T = 1;
+            } else if (lb == -1) {
+                os[T++] = -1;
+                break;
+            } else {
+                os[T++] = lb;
+            }
+        }
+        if (lb != -1) break;
+        kk += T;
+
+        /* Forward */
+        logZeros(N, T, logA);
+        logA[0] = 0.0;
+
+        for (t = 1; t < T; t++) {
+            for (i = 0; i < N; i++) {
+                if (stateSyms[i] == os[t]) {
+                    for (j = 0; j < N; j++) {
+                        iid = getIndex(j, i, N);
+                        if (allowed[iid] && P[iid] > 0.0) {
+                            x[j] = logA[getIndex2(j, t - 1, N, T)] + log(P[iid]);
+                        } else {
+                            x[j] = -INFINITY;
+                        }
+                    }
+                    logA[getIndex2(i, t, N, T)] = logsumexp(x, N);
+                }
+            }
+        }
+
+        /* Backward */
+        logZeros(N, T, logB);
+        logB[getIndex2(1, T - 1, N, T)] = 0.0;
+
+        for (t = T - 2; t > -1; t--) {
+            for (i = 0; i < N; i++) {
+                if (stateSyms[i] == os[t]) {
+                    for (j = 0; j < N; j++) {
+                        iid = getIndex(i, j, N);
+                        if (allowed[iid] && P[iid] > 0.0) {
+                            x[j] = log(P[iid]) + logB[getIndex2(j, t + 1, N, T)];
+                        } else {
+                            x[j] = -INFINITY;
+                        }
+                    }
+                    logB[getIndex2(i, t, N, T)] = logsumexp(x, N);
+                }
+            }
+        }
+
+        A0 = exp(logA[getIndex2(1, T - 1, N, T)]);
+        if (A0 == 0.0) {
+            nUnr++;
+            iU++;
+            continue;
+        }
+        
+        double logA_end = logA[getIndex2(1, T - 1, N, T)];
+
+        if (isinf(logA_end) && logA_end < 0) {
+            nUnr++;
+            iU++;
+            continue;
+        }        
+
+        for (i = 0; i < N; i++) {
+            for (j = 0; j < N; j++) {
+                iid = getIndex(i, j, N);
+                if (!allowed[iid] || P[iid] <= 0.0) continue;
+
+                for (t = 0; t < T - 1; t++) {
+                    if (stateSyms[i] == os[t] && stateSyms[j] == os[t + 1]) {
+                        x[t] = logA[getIndex2(i, t, N, T)]
+                             + log(P[iid])
+                             + logB[getIndex2(j, t + 1, N, T)];
+                    } else {
+                        x[t] = -INFINITY;
+                    }
+                }                
+                
+                PO[iid] += osK[iU] * exp(logsumexp(x, T - 1) - logA_end);   // log-space ratio
+            }
+        }
+
+        llk += logA[getIndex2(1, T - 1, N, T)] * osK[iU];
+        iU++;
+    }
+
+    for (i = 0; i < N * N; i++) {
+        if (!allowed[i]) PO[i] = 0.0;
+    }
+
+    if (applySparsity) {
+        for (i = 0; i < N * N; i++) {
+            if (!allowed[i]) continue;
+            PO[i] = PO[i] + alpha - 1.0;
+            if (PO[i] <= 0.0) {
+                PO[i] = 0.0;
+                allowed[i] = 0;
+                prunedFlag = 1;
+            }
+        }
+    }
+    
+    normalize_PO_preserve_empty_rows(N, PO, P, allowed);
+
+    mmax = 0.0;
+    for (i = 0; i < N * N; i++) {
+        double d = fabs(PO[i] - P[i]);
+        if (d > mmax) mmax = d;
+    }
+    for (i = 0; i < N * N; i++) {
+        P[i] = PO[i];
+    }
+
+    *llkOut = llk;
+    *mmaxOut = mmax;
+    *prunedThisIter = prunedFlag;
+    *nUnreachableOut = nUnr;
+}
+
+/* ----------------------------------------------------------------
+   Forward-only pass: compute data log-likelihood under given P.
+   No M-step, no parameter updates. Used for the final clean llk
+   so it corresponds exactly to the returned P.
+   ---------------------------------------------------------------- */
+static double compute_llk(int nSeq, int *osIn, int *osK, int N,
+                          int *stateSyms, double *P, int *allowed,
+                          double *logA, double *x, int *os,
+                          int *nUnreachableOut)
+{
+    int i, j, iid, lb, kk, ik, T, t, iU;
+    int nUnr = 0;
+    double llk = 0.0;
+    double logA_end;
+
+    kk = 0;
+    T = 0;
+    iU = 0;
+
+    while (kk < nSeq) {
+        for (ik = kk; ik < nSeq; ik++) {
+            lb = osIn[ik];
+            if (lb == 0) {
+                os[0] = 0;
+                T = 1;
+            } else if (lb == -1) {
+                os[T++] = -1;
+                break;
+            } else {
+                os[T++] = lb;
+            }
+        }
+        if (lb != -1) break;
+        kk += T;
+
+        logZeros(N, T, logA);
+        logA[0] = 0.0;
+
+        for (t = 1; t < T; t++) {
+            for (i = 0; i < N; i++) {
+                if (stateSyms[i] == os[t]) {
+                    for (j = 0; j < N; j++) {
+                        iid = getIndex(j, i, N);
+                        if (allowed[iid] && P[iid] > 0.0) {
+                            x[j] = logA[getIndex2(j, t - 1, N, T)] + log(P[iid]);
+                        } else {
+                            x[j] = -INFINITY;
+                        }
+                    }
+                    logA[getIndex2(i, t, N, T)] = logsumexp(x, N);
+                }
+            }
+        }
+
+        logA_end = logA[getIndex2(1, T - 1, N, T)];
+        if (isinf(logA_end) && logA_end < 0) {
+            nUnr++;
+        } else {
+            llk += logA_end * osK[iU];
+        }        
+        
+        iU++;
+    }
+
+    *nUnreachableOut = nUnr;
     return llk;
 }
 

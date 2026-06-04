@@ -20,6 +20,8 @@
                     
     2026-03-27  Major update on NGramPOMMSearch, which infers POMM from observed sequences. 
     
+    2026-06-04  Major update on BWPOMMC. Corrected bugs. Increaded BWRerun = 200, this is important for BW-algorithm to get correct transition matrix P. 
+    
    
 '''
 
@@ -70,7 +72,7 @@ betaTotalVariationDistance = 0.2    # the factor for modifying the sequence comp
                                     # variation distance, to include the effects of transition probability dependent context dependence
                                     # set this to 0, it becomes pure sequence completeness. 
 pValue = 0.05                       # p-value for accepting POMM based on the distributiuon of Pb.      
-BWRerun = 20                        # number of times Bohm-Welsh alogrith is ran. 
+BWRerun = 200                        # number of times Bohm-Welsh alogrith is ran. 
 nSamples = 10000                    # number of samples for getting pv from the Pbeta distribution.     
 pTolence = 1e-6                     # smallest transition probability.                      
                                     
@@ -111,17 +113,22 @@ pTolence = 1e-6                     # smallest transition probability.
         PBs - PBs sampled from the final model
         PbT - Pb of the observed sequences on the final model
 
-    MinPOMMSimpDeleteStates(S,osIn, nRerun = 50, pValue=pValue, nSample=10000, fnSave='')
+    MinPOMMSimpDeleteStates(S,osIn, nRerun = BWRerun, pValue=pValue, nSample=10000, fnSave='')
         
          Simplify by deleting states and making sure that the maximum likelihood remains within bound. 
          Input parameters:
             S - initial POMM
             osIn - observed sequences
             nRerun - number of times B-W is run with different seeds. 
-         Return S, P, Pc    
+         Return res
+            res = None if no update of S
+            otherwise
+                S, P, pv, PBs, PbT, Pc = res               
+
             S - state vector
             P - transition probabilities
             Pc - sequence completeness
+            pv - pvalue
     
         
         
@@ -727,13 +734,16 @@ def NGramPOMMSearch(osIn, pValue=0.05, stateMergeParam=[1, 0.1, 0.1], Pcut=0.001
             break
                    
     pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nSample=nSample)
-    print(f'\nAfter merging sequence prob based merging, pv=', pv, ' Pb sampled range=(', round(PBs.min(), 3), round(PBs.max(), 3), ') seq Pb=', round(PbT, 3),'\n')
+    print(f'\nAfter merging sequence prob based merging, pv=', pv, ' Pb sampled range=(', round(PBs.min(), 3), round(PBs.max(), 3), ') seq Pb=', round(PbT, 3))
+    print(f'S={S}\n')
      
     # test deleting state through grids.
     #print('Further simplification with state deletion method...') 
-    S, P, pv, PBs, PbT, Pc = MinPOMMSimpDeleteStates(S, osIn, nRerun = BWRerun, pValue=pValue, nSample=nSample)
-    print(f'    After deleting states pv={pv:0.4f}')
-
+    res = MinPOMMSimpDeleteStates(S, osIn, nRerun = BWRerun, pValue=pValue, nSample=nSample)
+    if res != None:
+        S, P, pv, PBs, PbT, Pc = res               
+        print(f'    After deleting states pv={pv:0.4f}')
+    
     # final model.     
     print(f'Found model S={S}')
     print(f'pv={pv:.4f}') 
@@ -1419,10 +1429,10 @@ def computeAIC(S,P,osU,osK):
     Pc - sequence completeness
 """ 
     
-def MinPOMMSimpDeleteStates(S, osIn, nRerun = 50, pValue=pValue, nSample=10000, fnSave=''):
+def MinPOMMSimpDeleteStates(S, osIn, nRerun = BWRerun, pValue=pValue, nSample=10000, fnSave=''):
     
     syms = list(np.unique(S[2:]))
-    
+    flag = 0
     for sm in syms:
         while True:
             iid = [ii for ii in range(len(S)) if S[ii] == sm]
@@ -1434,24 +1444,29 @@ def MinPOMMSimpDeleteStates(S, osIn, nRerun = 50, pValue=pValue, nSample=10000, 
             STest = STest[:kk] + STest[kk+1:]
             print('\nTest removing state', kk, 'with sym', S[kk])
 
-            PTest, ml, Pc, stdml, ML = BWPOMMCParallel(STest, osIn, nRerun=nRerun)
-            pv, PBs, PbT = getPVSampledSeqsPOMM(STest, PTest, osIn, nSample=nSample)
+            PTest, ml, PcTest, stdml, ML = BWPOMMCParallel(STest, osIn, nRerun=nRerun)
+            pvTest, PBsTest, PbTTest = getPVSampledSeqsPOMM(STest, PTest, osIn, nSample=nSample)
 
-            if pv >= pValue:
+            if pvTest >= pValue:
                 S = STest.copy()
                 P = PTest.copy()
+                pv = pvTest
+                PBs = PBsTest
+                PbT = PbTTest
+                Pc = PcTest
                 print(' Deletion accepted. pv=', pv, ' S=', S)
+                flag = 1
             else:
-                print(f' Rejected deletion. pv={pv:.4f}')
+                print(f' Rejected deletion. pv={pvTest:.4f}')
                 break  # no need for further deleting test. 
 
-                                    
-    print('Updated state S = ',S)
-    P, ml, Pc, stdml, ML = BWPOMMCParallel(S, osIn, nRerun=nRerun)    
-    pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nSample = nSample)
-        
-    print(f'    After deleting states model pv= {pv}')
-    return S, P, pv, PBs, PbT, Pc   
+    if flag == 1:                                    
+        print('\nUpdated state S = ',S)        
+        print(f'    After deleting states model pv= {pv}')
+        return [S, P, pv, PBs, PbT, Pc]  
+    else:
+        print('\nNo updates')
+        return None
     
 # save NGramPOMMSearch intermediate results to file. 
 def saveMinPOMMSimpDeleteStates(S,P,ng,pv,PbT,Pc,fnSave):
@@ -1623,14 +1638,35 @@ def getUniuqeSequencesProbConfidenceIntervals(osK, alpha):
     return pL, pU       
     
 # set parameter types   
-lib.BWPOMMC.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_int), \
-                        ctypes.c_int, ctypes.POINTER(ctypes.c_int), 
-                        ctypes.c_int,\
-                        ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_double), \
-                        ctypes.c_double, ctypes.c_int, ctypes.c_int]  
+lib.BWPOMMC.argtypes = [
+    ctypes.c_int,                       # nSeq
+    ctypes.POINTER(ctypes.c_int),       # osIn
+    ctypes.c_int,                       # nU
+    ctypes.POINTER(ctypes.c_int),       # osK
+    ctypes.c_int,                       # N
+    ctypes.POINTER(ctypes.c_int),       # stateSyms
+    ctypes.POINTER(ctypes.c_double),    # P (in/out)
+    ctypes.c_double,                    # pTol
+    ctypes.c_int,                       # maxIter
+    ctypes.c_int,                       # randSeed
+    ctypes.c_double,                    # alpha
+    ctypes.c_int,                       # burnIn
+    ctypes.c_int,                       # stableNeeded
+    ctypes.c_double,                    # pTolPhase2
+    ctypes.POINTER(ctypes.c_int),       # nUnreachable (out)
+]
+
 lib.BWPOMMC.restype = ctypes.c_double
 
 def BWPOMMCFun(Params):
+    
+    pTol         = 1e-4    # phase 1 convergence (loose, since pruning dominates)
+    maxIter      = 10000    # safety cap; usually exits much sooner
+    alpha        = 0.5     # mild sparsity; tune from here
+    burnIn       = 100      # let EM settle before pruning starts
+    stableNeeded = 100       # consecutive non-pruning iters before phase 1 ends
+    pTolPhase2   = 1e-8    # tight; phase 2 refines surviving probabilities
+    
     osU, osK, S, P, pTol, maxIter = Params
     N = len(S)
     S = np.array(S).astype(np.int32)
@@ -1648,11 +1684,18 @@ def BWPOMMCFun(Params):
 
     t1 = time.time()
     # call the C function.
+
+    nUnreachable = ctypes.c_int(0)
+
     ml = lib.BWPOMMC(ctypes.c_int(nSeq), osIn.ctypes.data_as(ctypes.POINTER(ctypes.c_int)), \
-                 ctypes.c_int(nU), osK.ctypes.data_as(ctypes.POINTER(ctypes.c_int)), \
-                 ctypes.c_int(N),S.ctypes.data_as(ctypes.POINTER(ctypes.c_int)), \
-                 P.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), \
-                 ctypes.c_double(pTol), ctypes.c_int(maxIter), ctypes.c_int(randSeed))
+                     ctypes.c_int(nU), osK.ctypes.data_as(ctypes.POINTER(ctypes.c_int)), \
+                     ctypes.c_int(N), S.ctypes.data_as(ctypes.POINTER(ctypes.c_int)), \
+                     P.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), \
+                     ctypes.c_double(pTol), ctypes.c_int(maxIter), ctypes.c_int(randSeed), \
+                     ctypes.c_double(alpha), ctypes.c_int(burnIn), \
+                     ctypes.c_int(stableNeeded), ctypes.c_double(pTolPhase2), \
+                     ctypes.byref(nUnreachable))    
+
     t2 = time.time()
     #print(f'     BWPOMMC used {t2-t1:.4f} sec')
     
@@ -1752,15 +1795,25 @@ def BWPOMMCParallel(S, osInO, Pcut=0.0, maxSteps=10000, pTol=1e-6, nRerun=BWReru
     res = pool.map(BWPOMMCFun,Ps,chunksize = 1)
     pool.close()
     pool.join()
+
+    ML = np.array([ml for (ml, P) in res], dtype=float)
+    finite = np.isfinite(ML)
+
+    if not finite.any():
+        # Every rerun diverged: with the state(s) deleted, the model structurally
+        # cannot generate some observed sequence (P(seq)=0 -> log-lik = -inf for
+        # any P). Signal an invalid candidate so the search rejects this deletion.
+        P = res[0][1]
+        Pc, _ = computeSequenceCompleteness(S, P, osIn, osU)
+        return P, -np.inf, Pc, np.nan, ML
+
+    iid     = int(np.argmax(np.where(finite, ML, -np.inf)))   # best finite run
+    P       = res[iid][1]
+    Pc, Pcomp = computeSequenceCompleteness(S, P, osIn, osU)
+    mlSigma = np.std(ML[finite])      # spread over successful reruns only
+    mlMax   = ML[iid]
+    return P, mlMax, Pc, mlSigma, ML
     
-    ML = [ml for (ml, P) in res]
-    ML = np.array(ML)
-    iid = ML.argmax()
-    P = res[iid][1]
-    Pc, Ps = computeSequenceCompleteness(S,P,osIn,osU)
-    mlSigma = np.std(ML)
-    mlMax = ML[iid]
-    return P, mlMax, Pc, mlSigma, ML    
 
 # Compute log likelihood of the seqeucens given the POMM. 
 # S, states
@@ -2958,8 +3011,10 @@ def MinPOMMmotif(osIn,motifSyllabels,nRerun=100,pValue=0.05,nSample=10000):
     print('After merging motif POMMs S=',S) 
 
     # simplify by deleting states       
-    S, P, pv, PBs, PbT, Pc = MinPOMMSimpDeleteStates(S,osIn,nRerun=nRerun,nSample=nSample)          
-    print('After state deletion pv=',pv)
+    res = MinPOMMSimpDeleteStates(S,osIn,nRerun=nRerun,nSample=nSample)  
+    if res != None:
+        S, P, pv, PBs, PbT, Pc = res               
+        print('After state deletion pv=',pv)
     
     return S, P,  pv, PBs, PbT
                 
