@@ -46,8 +46,34 @@ Parameters.
 	maxIter - maximum iterations. 
 	randSeed - seed for random number generator. If -1, assumes that P is setup already. 
 Returns log-likelihood of the sequences
-*/ 
-double BWPOMMC(int nSeq, int *osIn, int nU, int *osK, int N, int *stateSyms, double *P, double pTol, int maxIter, int randSeed);
+
+  2026-5-09, two-phase sparsity:
+   Phase 1: EM with Dirichlet MAP (alpha < 1) prunes edges. Pruning is
+            permanent. Phase 1 exits once the support has been stable for
+            stableNeeded consecutive iterations and parameter change is
+            below pTol.
+   Phase 2: pure EM (no Dirichlet, no pruning) on the frozen support, run
+            to a tight tolerance to remove the Dirichlet bias from surviving
+            edge probabilities.
+   Final:   one extra forward-only pass to compute llk under the final P
+            (rather than under the second-to-last P).
+
+   Parameters:
+     alpha        : Dirichlet hyperparameter for phase 1. alpha < 1 induces
+                    sparsity. Pass 1.0 to disable phase 1 pruning.
+     burnIn       : phase 1 iterations before any pruning is allowed.
+     stableNeeded : consecutive non-pruning iterations required to declare
+                    phase 1 converged. Typical: 3.
+     pTolPhase2   : tighter tolerance for phase 2. Typical: 1e-7 or 1e-8.
+     nUnreachable : output, number of sequences with A0 == 0 under final P. */
+
+
+double BWPOMMC(int nSeq, int *osIn, int nU, int *osK, int N, int *stateSyms,
+               double *P, double pTol, int maxIter, int randSeed,
+               double alpha, int burnIn, int stableNeeded,
+               double pTolPhase2, int *nUnreachable);
+
+
 
 /*
 Data structure for using multi-thread for BW algorithm. 
