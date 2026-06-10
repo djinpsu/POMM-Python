@@ -25,7 +25,7 @@ Major update: 6/4/2026, 6/10/2026. Fixed bugs in BWPOMMC in libPOMMC.c, and in P
         Successively build n-gram transition models, and test for Pbeta significance.
         Then merge states. 
    
-        S, P, pv, PBs, PbT = NGramPOMMSearch(osIn, pValue=0.05, Pcut=0.001, stateMergeParam=[1, 0.1, 0.1], nSample = 10000, ngramStart = 1, fnSave=''):
+        S, P, pv, PBs, PbT = NGramPOMMSearch(osIn, pValue=0.01, Pcut=0.001, stateMergeParam=[1, 0.1, 0.1], nSample = 10000, ngramStart = 1, fnSave=''):
 
         Inputs: 
         
