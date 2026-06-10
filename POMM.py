@@ -71,7 +71,7 @@ lib = ctypes.CDLL(str(Path(__file__).resolve().parent / "libPOMM.so"))
 betaTotalVariationDistance = 0.2    # the factor for modifying the sequence completeness adding the total 
                                     # variation distance, to include the effects of transition probability dependent context dependence
                                     # set this to 0, it becomes pure sequence completeness. 
-pValue = 0.05                       # p-value for accepting POMM based on the distributiuon of Pb.      
+pValue = 0.01                       # p-value for accepting POMM based on the distributiuon of Pb.      
 BWRerun = 200                        # number of times Bohm-Welsh alogrith is ran. 
 nSamples = 10000                    # number of samples for getting pv from the Pbeta distribution.     
 pTolence = 1e-6                     # smallest transition probability.                      
@@ -91,7 +91,7 @@ pTolence = 1e-6                     # smallest transition probability.
         Successively build n-gram transition models, and test for Pbeta significance.
         Then merge states. 
    
-        S, P, pv, PBs, PbT = NGramPOMMSearch(osIn, pValue=0.05, Pcut=0.001, stateMergeParam=[1, 0.1, 0.1], nSample = 10000, ngramStart = 1, fnSave=''):
+        S, P, pv, PBs, PbT = NGramPOMMSearch(osIn, pValue=Pvalue, Pcut=0.001, stateMergeParam=[1, 0.1, 0.1], nSample = 10000, ngramStart = 1, fnSave=''):
 
         Inputs: 
         
@@ -159,7 +159,7 @@ pTolence = 1e-6                     # smallest transition probability.
                 symU, symbols.
      
      
-        BWPOMMCParallel(S,osInO,maxSteps=5000,pTol=1e-6, nRerun=100)
+        BWPOMMCParallel(S,osInO,maxSteps=5000,pTol=1e-6, nRerun=BWRerun)
 
             Parallel version of BWPOMM, calling C function BWPOMMC from libPOMM.h   
             Inputs:
@@ -406,7 +406,7 @@ pTolence = 1e-6                     # smallest transition probability.
                 PSteps, nStep x (nSym+1) matrix. PSteps[:,0] is the probability of ending at the steps. 
      
      
-        MergeStatesRecalculateP(S,P,mergeInds,osT,maxIterBW=1000,nRerunBW=100)
+        MergeStatesRecalculateP(S,P,mergeInds,osT,maxIterBW=1000,nRerunBW=BWRerun)
 
             merge states, keep the state vector structure but change the transition probability matrix
             merge state ii to jj. The list is given in mergeInds
@@ -510,7 +510,7 @@ pTolence = 1e-6                     # smallest transition probability.
 
 """
 
-def NGramPOMMSearch(osIn, pValue=0.05, stateMergeParam=[1, 0.1, 0.1], Pcut=0.001, nSample = 10000, ngramStart = 1, fnSave=''):
+def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=[1, 0.1, 0.1], Pcut=0.001, nSample = 10000, ngramStart = 1, fnSave=''):
  
     print('Constructing POMM with nGram transition diagram...')
     flag = 0
@@ -665,23 +665,25 @@ def NGramPOMMSearch(osIn, pValue=0.05, stateMergeParam=[1, 0.1, 0.1], Pcut=0.001
         mParams.append(vv)
         vv -= step
 
-    for mergeClusterDistThreshod in mParams:
+    for sm in symU:
 
-        S = S0.copy()
-        SnumVis = SnumVis0.copy()
-        P = P0.copy()
+        N = len(S)
+        iid = np.where(sm == np.array(S))[0]
 
-        PTest = P.copy()
-        SnumVisTest = SnumVis.copy()
+        if len(iid) <= 1:
+            continue
 
-        print(f'\nTesting mergeClusterDistThreshod: {mergeClusterDistThreshod:.4f}')
 
-        for sm in symU:
-            N = len(S)
-            iid = np.where(sm == np.array(S))[0]
+        for mergeClusterDistThreshod in mParams:
 
-            if len(iid) <= 1:
-                continue
+            S = S0.copy()
+            SnumVis = SnumVis0.copy()
+            P = P0.copy()
+
+            PTest = P.copy()
+            SnumVisTest = SnumVis.copy()
+
+            print(f'\nTesting mergeClusterDistThreshod: {mergeClusterDistThreshod:.4f}')
 
             print(' ')
             print(' merging states for sym  = ', sm)
@@ -722,16 +724,18 @@ def NGramPOMMSearch(osIn, pValue=0.05, stateMergeParam=[1, 0.1, 0.1], Pcut=0.001
                     jj = iid[kkd[j]]
                     SnumVisTest, PTest = mergeStateJJtoII(ii, jj, N, SnumVisTest, PTest)
 
-        PTest = normP(PTest, Pcut=Pcut)
-        pv, PBs, PbT = getPVSampledSeqsPOMM(S, PTest, osIn, nSample=nSample)
-        print(f'     pv=', pv, ' Pb sampled range=(', round(PBs.min(), 3), round(PBs.max(), 3), ') seq Pb=', round(PbT, 3))
+            PTest = normP(PTest, Pcut=Pcut)
+            pv, PBs, PbT = getPVSampledSeqsPOMM(S, PTest, osIn, nSample=nSample)
+            print(f'     pv=', pv, ' Pb sampled range=(', round(PBs.min(), 3), round(PBs.max(), 3), ') seq Pb=', round(PbT, 3))
 
-        if pv >= pValue:
-            print(' Mergers accepted. ')
-            S, P, iids = removeUnreachableStates(S, PTest, returniid=True)
-            SnumVis = [SnumVisTest[k] for k in iids]
+            if pv >= pValue:
+                print(' Mergers accepted. ')
+                S, P, iids = removeUnreachableStates(S, PTest, returniid=True)
+                SnumVis = [SnumVisTest[k] for k in iids]
+                S0 = S.copy()
+                P0 = P.copy()
 
-            break
+                break
                    
     pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nSample=nSample)
     print(f'\nAfter merging sequence prob based merging, pv=', pv, ' Pb sampled range=(', round(PBs.min(), 3), round(PBs.max(), 3), ') seq Pb=', round(PbT, 3))
@@ -1353,7 +1357,7 @@ def constructNGramPOMMC(osIn, ng):
     return S, P, SnumVis
     
         
-def AdjustTransProbWithBWKeepConnections(S,P,osIn,nRerun=100,Pcut=0.001):
+def AdjustTransProbWithBWKeepConnections(S,P,osIn,nRerun=BWRerun,Pcut=0.001):
     N = len(S)
     P, ml, Pc, stdml, ML = BWPOMMCParallel(S,osIn, Pcut= 0.001, nRerun=nRerun)    
     S, P = removeUnreachableStates(S,P)    
@@ -1705,65 +1709,93 @@ def BWPOMMCFun(Params):
                     
     return (ml,P)                   
 
-# multi-thread BWPOMMCMultiThread
-lib.BWPOMMCMultiThread.argtypes = [
-        ctypes.c_int, 
-        ctypes.POINTER(ctypes.c_int), 
-        ctypes.c_int, 
-        ctypes.POINTER(ctypes.c_int), 
-        ctypes.c_int,
-        ctypes.POINTER(ctypes.c_int), 
-        ctypes.POINTER(ctypes.c_double), 
-        ctypes.c_double, 
-        ctypes.c_int, 
-        ctypes.c_int, 
-        ctypes.c_int
-]   
-lib.BWPOMMCMultiThread.restype = ctypes.c_double
 
-def BWPOMMCFunMultiThread(osU, osK, S, P, pTol, maxIter, numThreads):
-    N = len(S)
-    S = np.array(S).astype(np.int32)
-    P = np.array(P)
-    osIn =[]
-    for i in range(len(osU)):
-        osIn.append(0)
-        osIn += list(osU[i])
-        osIn.append(-1)
-    osIn = np.array(osIn).astype(np.int32)
-    osK = np.array(osK).astype(np.int32)
-    nU = len(osK)
-    randSeed = int(rand() * 100000);
-    nSeq = len(osIn)
-    
-    t1 = time.time()
-    # call the C function.
-    ml = lib.BWPOMMCMultiThread(
-            ctypes.c_int(nSeq), 
-            osIn.ctypes.data_as(ctypes.POINTER(ctypes.c_int)), 
-            ctypes.c_int(nU), 
-            osK.ctypes.data_as(ctypes.POINTER(ctypes.c_int)), 
-            ctypes.c_int(N),
-            S.ctypes.data_as(ctypes.POINTER(ctypes.c_int)), 
-            P.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), 
-            ctypes.c_double(pTol), 
-            ctypes.c_int(maxIter), 
-            ctypes.c_int(randSeed), 
-            ctypes.c_int(numThreads)
-    )
-    t2 = time.time()
-    print('     BWPOMMCMultiThread used ',t2-t1,'sec')
-        
-    if 0:
-        print('     Checking log-likelihood returned from C code with Python code...');
-        printP(P)
-        ml2 = computeLogLike(S,P,osU,osK)
-        print('ml C=',ml)
-        print('ml P=',ml2)
-                            
-    return (ml,P)                   
+def initPBigramJitter(osU, osK, S, N, P, jitterAmp=0.2, edgeFloor=1e-3, randSeed=None):
+    """Bigram + jitter initialization of the transition matrix P.
 
+    Fills P (N x N, row-major: P[i,j] is the i->j probability) from observed
+    symbol-bigram statistics, splitting each symbol's transition mass across
+    the states that share that symbol and adding multiplicative jitter so
+    Baum-Welch can separate same-symbol states.
 
+    State convention (matches the C BWPOMMC): S[0]==0 (start), S[1]==-1 (end).
+    Structural zeros: nothing into state 0, nothing out of state 1, no 0->1.
+
+    Candidate support is taken from the nonzero pattern of the incoming P; if
+    P is all zero, every structurally-allowed edge is a candidate. The nonzero
+    pattern written here becomes the support BWPOMMC starts EM from, since it
+    derives its `allowed` mask from P[i] > 0 on entry.
+
+    jitterAmp : symmetry-breaking strength (0.1-0.3 typical, must be < 2).
+    edgeFloor : probability-scale floor on candidate edges so allowed-but-
+                unobserved edges start nonzero and get pruned by phase 1.
+    randSeed  : seed for the jitter RNG. Use a DIFFERENT seed per restart.
+    """
+    rng = np.random.default_rng(randSeed)
+    S = np.asarray(S, dtype=np.int64)
+    P = np.asarray(P, dtype=np.float64).reshape(N, N)
+
+    maxSym = int(S.max())
+    nSym = maxSym + 2
+    idx = lambda s: s + 1                       # end(-1)->0, start(0)->1, k->k+1
+
+    def allowed(i, j):
+        if j == 0: return False                 # nothing into start
+        if i == 1: return False                 # end has no outgoing
+        if i == 0 and j == 1: return False      # no direct start->end
+        return True
+
+    # candidate mask from incoming P; all-zero P -> full connectivity
+    mask = P > 0.0
+    if not mask.any():
+        mask = np.zeros((N, N), dtype=bool)
+        for i in range(N):
+            for j in range(N):
+                mask[i, j] = allowed(i, j)
+    else:
+        for i in range(N):
+            for j in range(N):
+                if not allowed(i, j):
+                    mask[i, j] = False
+
+    # symbol bigram counts, weighted by copy number
+    F = np.zeros((nSym, nSym))
+    for seq, k in zip(osU, osK):
+        toks = [0] + list(seq) + [-1]
+        for a, b in zip(toks[:-1], toks[1:]):
+            F[idx(a), idx(b)] += k
+    rowtot = F.sum(axis=1)
+
+    # build P row by row
+    P[:] = 0.0
+    for i in range(N):
+        if i == 1:
+            continue                            # end state: no outgoing
+        a = int(S[i])
+
+        # per-symbol candidate-target counts, to split a symbol's mass across
+        # the states sharing it (preserves the symbol marginal; jitter breaks
+        # the within-symbol symmetry)
+        symCount = np.zeros(nSym, dtype=np.int64)
+        for j in range(N):
+            if mask[i, j]:
+                symCount[idx(int(S[j]))] += 1
+
+        rsum = 0.0
+        for j in range(N):
+            if not mask[i, j]:
+                continue
+            b = int(S[j])
+            fprob = F[idx(a), idx(b)] / rowtot[idx(a)] if rowtot[idx(a)] > 0 else 0.0
+            base = fprob / symCount[idx(b)]
+            u = rng.random()
+            fac = max(1.0 + jitterAmp * (u - 0.5), 1e-6)
+            P[i, j] = (base + edgeFloor) * fac
+            rsum += P[i, j]
+        if rsum > 0.0:
+            P[i, :] /= rsum
+
+    return P
     
 # Parallel version of BWPOMM, calling C function BWPOMMC from libPOMM.h 
 # Inputs:
@@ -1787,7 +1819,16 @@ def BWPOMMCParallel(S, osInO, Pcut=0.0, maxSteps=10000, pTol=1e-6, nRerun=BWReru
     
     Ps = []
     for irun in range(nRerun):
+        # ---- bigram + jitter initialization of P -------------------------------
+        # Fills P from symbol-bigram statistics and breaks same-symbol degeneracy.
+        # Respects P's incoming nonzero pattern as the candidate support; pass an
+        # all-zero P for full connectivity. Seeded off randSeed (independent of the
+        # C RNG) so each restart gets different jitter.
         P = normP(rand(N,N))
+        randSeed = int(rand() * 100000);
+
+        P = initPBigramJitter(osU, osK, S, N, P, jitterAmp=0.2, edgeFloor=1e-3,
+                              randSeed=randSeed)        
         Ps.append([osU,osK,S,P,pTol,maxSteps])
 
     # parallel conputation of multiple runs. 
@@ -2468,7 +2509,7 @@ def MergeStates(S,P,mergeInds):
 #   osT - observed sequences. 
 # Return:
 #   P2 - transition matrix. 
-def MergeStatesRecalculateP(S,P,mergeInds,osT,maxIterBW=1000,nRerunBW=100,Pcut=0.0):
+def MergeStatesRecalculateP(S,P,mergeInds,osT,maxIterBW=1000,nRerunBW=BWRerun,Pcut=0.0):
     P = normP(P, Pcut=Pcut)
     P2 = P.copy()
     for (ii,jj) in mergeInds:
@@ -2871,7 +2912,7 @@ def getLabels(seqs):
         
 
 # connstruct POMMs for each motif sequences.    
-def constructPOMMsMotifSeqs(motifSeqs,nRerun=100,pValue=0.05,nSample=10000):
+def constructPOMMsMotifSeqs(motifSeqs,nRerun=BWRerun,pValue=0.05,nSample=10000):
     
     motifPOMMs = {}
     motifPOMMs['motifLabels'] = motifSeqs['motifLabels']
@@ -2931,7 +2972,7 @@ def printSequences(osIn, Syms2):
         
 
 # get the POMM with the motif sequences.        
-def getMotifPOMM(osIn,motifSyllabels,nRerun=100,pValue=0.05,nSample=10000):
+def getMotifPOMM(osIn,motifSyllabels,nRerun=BWRerun,pValue=pValue,nSample=10000):
     print('\nGetting motif sequences ...')
     motifSeqs = []
     motifSeqsCollect = []
@@ -2977,7 +3018,7 @@ def getMotifPOMM(osIn,motifSyllabels,nRerun=100,pValue=0.05,nSample=10000):
 #   pv - pValue
 #   PBs - sampled Pb
 #   PbT - Pb of the original seqeuences. 
-def MinPOMMmotif(osIn,motifSyllabels,nRerun=100,pValue=0.05,nSample=10000):
+def MinPOMMmotif(osIn,motifSyllabels,nRerun=BWRerun,pValue=pValue,nSample=10000):
 
     startSyms = getStartingSyllables(osIn)
     motifSyllabels = list(np.unique(motifSyllabels + startSyms))
@@ -3425,7 +3466,7 @@ def PBRankPOMM(osIn, ngramStart = 1, fnSave=''):
             else:   # call multi-thread C function model.
             
                 P = normP(rand(N,N))
-                ml,P = BWPOMMCFunMultiThread(osU, osK, S, P, pTol, maxSteps, nProc)         
+                ml,P = BWPOMMCFun(osU, osK, S, P, pTol, maxSteps, nProc)         
                 
             t2 = time.time()
             print('     Used ',t2-t1,'sec')

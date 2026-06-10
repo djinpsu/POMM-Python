@@ -1,7 +1,7 @@
 # This code is for analyzing syntax of Bengalese finch songs in the cooling experiments. 
 #
 # Written by Dezhe Jin, dzj2@psu.edu
-# Date Start: 2025-12-10
+# Date Start: 2025-12-10, 
 
 from POMM import *
 import pickle
@@ -13,21 +13,30 @@ matplotlib.rcParams['font.family'] = 'Times'
 
 ### common parameters
 maxIterBW = 1000			# maximum iterations in BW algorithm
-nRerunBW = 100				# number of re-runs of BW algorithm
+nRerunBW = 200				# number of re-runs of BW algorithm
 nSample = 10000				# number of samples drawn from POMM for computing Pc distribution
-pValue = 0.05               # pValue for inferring POMM. 
+pValue = 0.01               # pValue for inferring POMM. 
 Pcut=1e-4
 
 # set random number generator seed
 random.seed(datetime.now().timestamp())	
 
+np.seterr(invalid='raise') 
+
 def main():
 
-    #fn = '0mA_annot_observed_sequences.txt'
-    fn = '150mA_u_left_tl.annot_observed_sequences.txt'
+    fn = '0mA_annot_observed_sequences.txt'
+    #fn = '150mA_u_left_tl.annot_observed_sequences.txt'
     
     #fn = 'bird_022012/200mA_u_bilateral_tl.annot_observed_sequences.txt'
     #fn = 'bird_022012/0mA_u_tl.annot_observed_sequences.txt'
+    
+    #fn = 'pv_0p01/200_bilateral/baseline_subset_2.txt'
+    #fn = 'pv_0p01/200_left/baseline_subset_5.txt'
+
+    #fn = 'baseline_subset_1.txt'
+    #fn = 'baseline_subset_3.txt'
+    #fn = 'baseline_subset_7.txt'
     
     seqs, syllableLabels = getSequences(fn)
         

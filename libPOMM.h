@@ -96,9 +96,6 @@ struct BWData {
 	double *x;		//size max(N, T), work space. 
 	double llk;	//number, maximum likelihood to be added to the total
 };
-//multi thread version of BW. 
-double BWPOMMCMultiThread(int nSeq, int *osIn, int nU, int *osK, int N, int *stateSyms, double *P, double pTol, int maxIter, int randSeed, int numThreads);
-
 
 void PrintTransitionMatrix(int N, double * P);
 
