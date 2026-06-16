@@ -734,6 +734,7 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=[1, 0.1, 0.1], Pcut=0.0
                 SnumVis = [SnumVisTest[k] for k in iids]
                 S0 = S.copy()
                 P0 = P.copy()
+                SnumVis0 = SnumVis.copy()
 
                 break
                    
