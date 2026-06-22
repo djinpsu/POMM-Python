@@ -21,6 +21,14 @@
     2026-03-27  Major update on NGramPOMMSearch, which infers POMM from observed sequences. 
     
     2026-06-04  Major update on BWPOMMC. Corrected bugs. Increaded BWRerun = 200, this is important for BW-algorithm to get correct transition matrix P. 
+                Use pValue = 0.01 for stability of POMMs inferred. 
+                
+    2026-06-17  getNumericalSequencesNonRepeatCreateSyllableLabels(seqs)
+                    This creates syllableLabels from seqs. If a symbol repeats n times, a new syllable label s_n is created. 
+                    Returns numericSeqs, syllableLabels, Syms, Syms2
+                    
+    2026-06-22  minor change in NGramPOMMSearch. Use pVaule+0.02 as the intermediate pValue when merging states. When deleting states, pValue is used. 
+                This reduces fluctations that make the final model unsable to pass pValue test. 
     
    
 '''
@@ -356,6 +364,16 @@ pTolence = 1e-6                     # smallest transition probability.
                 Syms, dictionary converging syms to numerics
                 Syms2, dictionary converging numerics to syms  
      
+        getNumericalSequencesNonRepeatCreateSyllableLabels(seqs)
+            get numerical sequences with no repeats from symbol sequences seqs
+            if a symbol 'A' is repeated n times, a new symbol is created 'A_n'
+            Inputs:
+                seqs - symbol sequences
+            Returns
+                numericSeqs         - numerical sequence, contains no repeats
+                syllableLabels      - syllable labels, symbols such as 'A_3' denotes AAA.
+                Syms                - dictionary for converting symbols to numerics
+                Syms2               - dictionary for converting numerics to symbols.
      
         plotTransitionDiagram(S,P,Pcut=0.01,filenameDot='temp.dot',filenamePDF='temp.pdf',removeUnreachable=False,markedStates=[],labelStates=0)
 
@@ -515,6 +533,10 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=[1, 0.1, 0.1], Pcut=0.0
     print('Constructing POMM with nGram transition diagram...')
     flag = 0
     maxNG = 200
+    
+    pValue_intermediate = min(1.0, pValue + 0.02)   # make the intermediate value larger than the final p-Vlaue. 
+    print(f'\nIntermiediate pValue_intermediate = {pValue_intermediate}. The final pValue: {pValue}')
+    
     for ng in range(ngramStart,maxNG):
         print('\nTesting nGram size ng = ',ng)
         
@@ -528,7 +550,7 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=[1, 0.1, 0.1], Pcut=0.0
             
         print(' S=',S)
 
-        if pv > pValue:
+        if pv > pValue_intermediate:
             print(' Accepted pv=',round(pv,3))
             flag = 1
             break
@@ -643,7 +665,7 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=[1, 0.1, 0.1], Pcut=0.0
         pv, PBs, PbT = getPVSampledSeqsPOMM(S, PTest, osIn, nSample=nSample)
         print(f'     pv=', pv, ' Pb sampled range=(', round(PBs.min(), 3), round(PBs.max(), 3), ') seq Pb=', round(PbT, 3))
 
-        if pv >= pValue:
+        if pv >= pValue_intermediate:
             print(' Markov symbol. Mergers accepted. \n')
             S, P, iids = removeUnreachableStates(S, PTest, returniid=True)
             SnumVis = [SnumVisTest[k] for k in iids]
@@ -728,8 +750,8 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=[1, 0.1, 0.1], Pcut=0.0
             pv, PBs, PbT = getPVSampledSeqsPOMM(S, PTest, osIn, nSample=nSample)
             print(f'     pv=', pv, ' Pb sampled range=(', round(PBs.min(), 3), round(PBs.max(), 3), ') seq Pb=', round(PbT, 3))
 
-            if pv >= pValue:
-                print(' Mergers accepted. ')
+            if pv >= pValue_intermediate:
+                print(' Mergers accepted. \n')
                 S, P, iids = removeUnreachableStates(S, PTest, returniid=True)
                 SnumVis = [SnumVisTest[k] for k in iids]
                 S0 = S.copy()
@@ -737,6 +759,9 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=[1, 0.1, 0.1], Pcut=0.0
                 SnumVis0 = SnumVis.copy()
 
                 break
+            else:
+                print(' Mergers rejected. \n')
+                
                    
     pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nSample=nSample)
     print(f'\nAfter merging sequence prob based merging, pv=', pv, ' Pb sampled range=(', round(PBs.min(), 3), round(PBs.max(), 3), ') seq Pb=', round(PbT, 3))
@@ -1040,7 +1065,7 @@ def getPVSampledSeqsPOMM(S, P, osIn, nSample=10000):
     N = len(osIn)
     Params = [[S, P, N, NS[ii]] for ii in range(nProc)]
 
-    print("Sampling...")
+    print("\n Computing pv. Sampling...")
 
     with Pool(processes=nProc) as pool:
         res = pool.map(getModifiedSequenceCompletenessSamplingModelC, Params, chunksize=1)
@@ -2283,6 +2308,64 @@ def getNumericalSequencesNonRepeat(seqs,syllableLabels):
     
 
     return osIn, repeatNumSeqs, Syms, Syms2     
+    
+# get numerical sequences with no repeats from symbol sequences seqs
+# if a symbol 'A' is repeated n times, a new symbol is created 'A_n'
+# Inputs:
+#   seqs - symbol sequences
+# Returns
+#   numericSeqs         - numerical sequence, contains no repeats
+#   syllableLabels      - syllable labels, symbols such as 'A_3' denotes AAA.
+#   Syms                - dictionary for converting symbols to numerics
+#   Syms2               - dictionary for converting numerics to symbols.
+def getNumericalSequencesNonRepeatCreateSyllableLabels(seqs):
+
+    # First pass: collapse each run of a repeated symbol into a compound
+    # label 'sym_n', and collect the set of distinct compound labels.
+    compoundSeqs = []
+    uniqueSymbols = set()
+    for sq in seqs:
+        cs = []
+        if len(sq) == 0:
+            compoundSeqs.append(cs)
+            continue
+        prev = sq[0]
+        rn = 1
+        for lb in sq[1:]:
+            if lb == prev:
+                rn += 1
+            else:
+                sym = f"{prev}_{rn}"
+                cs.append(sym)
+                uniqueSymbols.add(sym)
+                prev = lb
+                rn = 1
+        sym = f"{prev}_{rn}"          # flush the final run
+        cs.append(sym)
+        uniqueSymbols.add(sym)
+        compoundSeqs.append(cs)
+
+    # Deterministic ordering: sort by (base symbol, repeat count) so that
+    # 'a_2' precedes 'a_10' (lexicographic sort would not).
+    def sortKey(s):
+        base, _, cnt = s.rpartition('_')
+        return (base, int(cnt))
+    syllableLabels = sorted(uniqueSymbols, key=sortKey)
+
+    # 1-indexed numbering, consistent with the reference function.
+    Syms = {}
+    Syms2 = {}
+    for i, sym in enumerate(syllableLabels):
+        Syms[sym] = i + 1
+        Syms2[i + 1] = sym
+
+    # Second pass: map compound labels to integers.
+    numericSeqs = []
+    for cs in compoundSeqs:
+        numericSeqs.append([Syms[sym] for sym in cs])
+
+    return numericSeqs, syllableLabels, Syms, Syms2
+        
         
 # plot the transition matrix diagram using Graphviz. 
 # S, symbols associated with the states. 
@@ -2631,7 +2714,9 @@ def plotSequenceLengthDistribution(seqs,fn=''):
     if fn != '':
         print('Saving figure to ',fn)
         plt.savefig(fn)     
-    plt.show()
+        os.system(f'open {fn}')
+    else:
+        plt.show()
     
 # plotProbDistribution(Ps,ylimMax=-1,xlimlow=0, width=0.02, xticks = [0,0.2,0.4,0.6,0.8,1],yticks = []) 
 # plot sequence completeness in a nice way. 
@@ -3828,11 +3913,24 @@ def testPBnGramSearch():
     
     S, P, pv, PBs, PbT = PBnGramSearch(osIn, ngramStart = 2, fnSave='testPBnGramSearch.dat')
         
-
+def testGetNumericalSequencesNonRepeatCreateSyllableLabels():
+    
+    seqs = ['AAABCC', 'AABBC','ABC']
+    
+    numericSeqs, syllableLabels, Syms, Syms2 = getNumericalSequencesNonRepeatCreateSyllableLabels(seqs)
+    print(Syms)
+    print(Syms2)
+    print(syllableLabels)
+    for seq, nseq in zip(seqs,numericSeqs):
+        print(seq, nseq)
+        
+    
                     
 if __name__ == "__main__":
     
     
     #testPBRankPOMM()
     
-    testPBnGramSearch()
+    #testPBnGramSearch()
+    
+    testGetNumericalSequencesNonRepeatCreateSyllableLabels()
