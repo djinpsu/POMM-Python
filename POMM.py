@@ -29,6 +29,8 @@
                     
     2026-06-22  minor change in NGramPOMMSearch. Use pVaule+0.02 as the intermediate pValue when merging states. When deleting states, pValue is used. 
                 This reduces fluctations that make the final model unsable to pass pValue test. 
+                
+    2026-07-09  minor change in BWPOMMC. Removed sparcisity control.
     
    
 '''
@@ -1667,7 +1669,7 @@ def getUniuqeSequencesProbConfidenceIntervals(osK, alpha):
         pU.append(p_upper)
     return pL, pU       
     
-# set parameter types   
+# set parameter types
 lib.BWPOMMC.argtypes = [
     ctypes.c_int,                       # nSeq
     ctypes.POINTER(ctypes.c_int),       # osIn
@@ -1679,23 +1681,15 @@ lib.BWPOMMC.argtypes = [
     ctypes.c_double,                    # pTol
     ctypes.c_int,                       # maxIter
     ctypes.c_int,                       # randSeed
-    ctypes.c_double,                    # alpha
-    ctypes.c_int,                       # burnIn
-    ctypes.c_int,                       # stableNeeded
-    ctypes.c_double,                    # pTolPhase2
     ctypes.POINTER(ctypes.c_int),       # nUnreachable (out)
 ]
-
 lib.BWPOMMC.restype = ctypes.c_double
+
 
 def BWPOMMCFun(Params):
     
     pTol         = 1e-4    # phase 1 convergence (loose, since pruning dominates)
     maxIter      = 10000    # safety cap; usually exits much sooner
-    alpha        = 0.5     # mild sparsity; tune from here
-    burnIn       = 100      # let EM settle before pruning starts
-    stableNeeded = 100       # consecutive non-pruning iters before phase 1 ends
-    pTolPhase2   = 1e-8    # tight; phase 2 refines surviving probabilities
     
     osU, osK, S, P, pTol, maxIter = Params
     N = len(S)
@@ -1722,9 +1716,7 @@ def BWPOMMCFun(Params):
                      ctypes.c_int(N), S.ctypes.data_as(ctypes.POINTER(ctypes.c_int)), \
                      P.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), \
                      ctypes.c_double(pTol), ctypes.c_int(maxIter), ctypes.c_int(randSeed), \
-                     ctypes.c_double(alpha), ctypes.c_int(burnIn), \
-                     ctypes.c_int(stableNeeded), ctypes.c_double(pTolPhase2), \
-                     ctypes.byref(nUnreachable))    
+                     ctypes.byref(nUnreachable))
 
     t2 = time.time()
     #print(f'     BWPOMMC used {t2-t1:.4f} sec')

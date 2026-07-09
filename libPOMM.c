@@ -187,14 +187,12 @@ static double compute_llk(int nSeq, int *osIn, int *osK, int N,
                           double *logA, double *x, int *os,
                           int *nUnreachableOut);
 
-
 double BWPOMMC(int nSeq, int *osIn, int nU, int *osK, int N, int *stateSyms,
                double *P, double pTol, int maxIter, int randSeed,
-               double alpha, int burnIn, int stableNeeded,
-               double pTolPhase2, int *nUnreachable)
+               int *nUnreachable)
 {
     int i, istep;
-    int prunedThisIter, stableCount;
+    int prunedThisIter;          /* unused output of run_em_iteration */
     int nUnr = 0;
     double mmax;
     double *logA, *logB, *PO, *x;
@@ -207,6 +205,7 @@ double BWPOMMC(int nSeq, int *osIn, int nU, int *osK, int N, int *stateSyms,
         srand((unsigned int)randSeed);
     }
 
+    /* ---- fixed topology / structural mask (not sparsity pruning) ---- */
     allowed = (int *) malloc(N * N * sizeof(int));
     if (allowed == NULL) {
         if (nUnreachable) *nUnreachable = -1;
@@ -220,7 +219,6 @@ double BWPOMMC(int nSeq, int *osIn, int nU, int *osK, int N, int *stateSyms,
         allowed[getIndex(i,0,N)] = 0;
         allowed[getIndex(1,i,N)] = 0;
     }
-
     for (i = 0; i < N * N; i++) {
         if (!allowed[i]) P[i] = 0.0;
     }
@@ -230,7 +228,6 @@ double BWPOMMC(int nSeq, int *osIn, int nU, int *osK, int N, int *stateSyms,
     }
 
     maxSL = getMaxSeqLen(nSeq, osIn);
-
     logA = (double *) malloc(maxSL * N * sizeof(double));
     logB = (double *) malloc(maxSL * N * sizeof(double));
     PO   = (double *) malloc(N * N * sizeof(double));
@@ -238,41 +235,17 @@ double BWPOMMC(int nSeq, int *osIn, int nU, int *osK, int N, int *stateSyms,
     if (maxSL > N) x = (double *) malloc(maxSL * sizeof(double));
     else           x = (double *) malloc(N * sizeof(double));
 
-    /* ============================================================
-       PHASE 1: EM with Dirichlet MAP pruning
-       ============================================================ */
-    stableCount = 0;
-    for (istep = 0; istep < maxIter; istep++) {
-        int doSparsity = (istep >= burnIn) && (alpha < 1.0);
-
-        run_em_iteration(nSeq, osIn, osK, N, stateSyms, P, allowed,
-                         maxSL, logA, logB, PO, x, os,
-                         &llk, &mmax,
-                         doSparsity, alpha,
-                         &prunedThisIter, &nUnr);
-
-        if (!prunedThisIter) stableCount++;
-        else                 stableCount = 0;
-
-        if (stableCount >= stableNeeded && mmax < pTol) break;
-    }
-
-    /* ============================================================
-       PHASE 2: pure EM on frozen support
-       ============================================================ */
+    /* ---- pure EM on the fixed support ---- */
     for (istep = 0; istep < maxIter; istep++) {
         run_em_iteration(nSeq, osIn, osK, N, stateSyms, P, allowed,
                          maxSL, logA, logB, PO, x, os,
                          &llk, &mmax,
                          /*applySparsity=*/0, /*alpha=*/1.0,
                          &prunedThisIter, &nUnr);
-
-        if (mmax < pTolPhase2) break;
+        if (mmax < pTol) break;
     }
 
-    /* ============================================================
-       FINAL: clean llk pass under the final P (forward only)
-       ============================================================ */
+    /* ---- final clean llk pass under the final P (forward only) ---- */
     llk = compute_llk(nSeq, osIn, osK, N, stateSyms, P, allowed,
                       logA, x, os, &nUnr);
 
@@ -287,7 +260,6 @@ double BWPOMMC(int nSeq, int *osIn, int nU, int *osK, int N, int *stateSyms,
 
     return llk;
 }
-
 
 static void normalize_PO_preserve_empty_rows(
     int N,
