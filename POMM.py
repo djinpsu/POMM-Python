@@ -101,7 +101,7 @@ pTolence = 1e-6                     # smallest transition probability.
         Successively build n-gram transition models, and test for Pbeta significance.
         Then merge states. 
    
-        S, P, pv, PBs, PbT = NGramPOMMSearch(osIn, pValue=Pvalue, Pcut=0.001, stateMergeParam=[1, 0.1, 0.1], nSample = 10000, ngramStart = 1, fnSave=''):
+        S, P, pv, PBs, PbT = NGramPOMMSearch(osIn, pValue=Pvalue, Pcut=0.001, stateMergeParam=[1, 0.1, 0.1], nSample = 10000, ngramStart = 1, fnSave=None):
 
         Inputs: 
         
@@ -530,46 +530,132 @@ pTolence = 1e-6                     # smallest transition probability.
 
 """
 
-def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=[1, 0.1, 0.1], Pcut=0.001, nSample = 10000, ngramStart = 1, fnSave=''):
- 
+###
+# Module-level intermediate-data I/O.
+# Shared by NGramPOMMSearch and MinPOMMSimpDeleteStates -- keep ONE copy
+# at module level; do not re-nest these inside the search function.
+###
+
+def saveIntermediateData(ngStart, ngFinal, S, P, SnumVis, pv, PBs, PbT,
+                         sm_markov, sm_merged, sm_deleted, fnSaveIntermediate):
+    print(f'    Saving intermediate data to {fnSaveIntermediate}')
+    res = {
+        'ngStart': ngStart,
+        'ngFinal': ngFinal,
+        'S': S,
+        'P': P,
+        'SnumVis': SnumVis,
+        'pv': pv,
+        'PBs': PBs,
+        'PbT': PbT,
+        'sm_markov': sm_markov,
+        'sm_merged': sm_merged,
+        'sm_deleted': sm_deleted,
+    }
+    with open(fnSaveIntermediate, 'wb') as f:
+        pickle.dump(res, f)
+
+
+def readIntermediateData(fnSaveIntermediate):
+    print(f'    Reading intermediate data from {fnSaveIntermediate}')
+    with open(fnSaveIntermediate, 'rb') as f:
+        res = pickle.load(f)
+    return (
+        res['ngStart'],
+        res['ngFinal'],
+        res['S'],
+        res['P'],
+        res['SnumVis'],
+        res['pv'],
+        res['PBs'],
+        res['PbT'],
+        res['sm_markov'],
+        res['sm_merged'],
+        res.get('sm_deleted', []),   # tolerate pre-sm_deleted intermediate files
+    )
+
+
+def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=(1.0, 0.1, 0.1), Pcut=0.001,
+                    nSample=10000, ngramStart=1, fnSave=None):
+
     print('Constructing POMM with nGram transition diagram...')
     flag = 0
     maxNG = 200
-    
-    pValue_intermediate = min(1.0, pValue + 0.02)   # make the intermediate value larger than the final p-Vlaue. 
-    print(f'\nIntermiediate pValue_intermediate = {pValue_intermediate}. The final pValue: {pValue}')
-    
-    for ng in range(ngramStart,maxNG):
-        print('\nTesting nGram size ng = ',ng)
-        
-        # construct nGram POMM
-        S, P, SnumVis = constructNGramPOMMC(osIn, ng);
-        P = normP(P, Pcut = Pcut)
-                    
-        # test the statsicial signifance. 
-        pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nSample=nSample)
-        print(' Pb sampled range=(',round(PBs.min(),3),round(PBs.max(),3),') seq Pb=', round(PbT,3))
-            
-        print(' S=',S)
 
-        if pv > pValue_intermediate:
-            print(' Accepted pv=',round(pv,3))
-            flag = 1
-            break
+    ###
+    # (1) find the degree of the N-gram model
+    ###
+
+    if fnSave is not None:
+        fnSaveIntermediate = f'{fnSave}.inter.dat'
+        print(f'Results will be saved to {fnSave}')
+        print(f'    Intermediate results for continuation are saved to {fnSaveIntermediate}')
+        if os.path.exists(fnSaveIntermediate):
+            print(f' Intermediate file exists. Continuing. For a fresh start, delete {fnSaveIntermediate}')
+            (ngStart, ngFinal, S, P, SnumVis, pv, PBs, PbT,
+             sm_markov, sm_merged, sm_deleted) = readIntermediateData(fnSaveIntermediate)
         else:
-            print(' Rejected pv=',round(pv,3))
-            
-    if flag == 0:
-        print('WARNING: in NGramPOMMSearch: no NGram model accepted up until ng=',ng)
-        Pc = 0
-        return S, P, pv, PBs, PbT
- 
-    pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nSample=nSample)
-    print(f'Ngram model pv={pv:0.4f}')
-    
-    # get all unique sequences of length ng
-    seqDict, symU = getUniqueSequencesByStartSymbol(osIn, ng+1)
+            ngFinal = 0
+            ngStart = ngramStart
+            S = P = SnumVis = pv = PBs = PbT = None
+            sm_markov, sm_merged, sm_deleted = [], [], []
+            saveIntermediateData(ngStart, ngFinal, S, P, SnumVis, pv, PBs, PbT,
+                                 sm_markov, sm_merged, sm_deleted, fnSaveIntermediate)
+    else:
+        fnSaveIntermediate = None
+        ngFinal = 0
+        ngStart = ngramStart
+        S = P = SnumVis = pv = PBs = PbT = None
+        sm_markov, sm_merged, sm_deleted = [], [], []
 
+    pValue_intermediate = min(1.0, pValue + 0.02)
+    print(f'\nIntermediate pValue_intermediate = {pValue_intermediate}. Final pValue: {pValue}')
+
+    if ngFinal == 0:
+        ngStart0 = ngStart
+        for ng in range(ngStart0, maxNG):
+            print('\nTesting nGram size ng = ', ng)
+            S, P, SnumVis = constructNGramPOMMC(osIn, ng)
+            P = normP(P, Pcut=Pcut)
+            pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nSample=nSample)
+            print(' Pb sampled range=(', round(PBs.min(), 3), round(PBs.max(), 3),
+                  ') seq Pb=', round(PbT, 3))
+            print(' S=', S)
+            if pv > pValue_intermediate:
+                print(' Accepted pv=', round(pv, 3))
+                flag = 1
+                break
+            else:
+                print(' Rejected pv=', round(pv, 3))
+
+            if fnSaveIntermediate is not None:
+                # ng was tested and rejected: resume from ng + 1, not ng.
+                ngStart = ng + 1
+                saveIntermediateData(ngStart, ngFinal, S, P, SnumVis, pv, PBs, PbT,
+                                     sm_markov, sm_merged, sm_deleted, fnSaveIntermediate)
+
+        if flag == 0:
+            print('WARNING: in NGramPOMMSearch: no NGram model accepted up until ng=', ng)
+            return S, P, pv, PBs, PbT
+
+        # Record the accepted degree unconditionally (not only when saving),
+        # so the fnSave=None path carries the same state.
+        ngStart = ng
+        ngFinal = ng
+
+        # pv, PBs, PbT from the accepting iteration are still current for
+        # this (S, P); no need to re-sample here.
+        if fnSaveIntermediate is not None:
+            saveIntermediateData(ngStart, ngFinal, S, P, SnumVis, pv, PBs, PbT,
+                                 sm_markov, sm_merged, sm_deleted, fnSaveIntermediate)
+    else:
+        # Resumed past the degree search: the loop never ran in this call, so
+        # restore ng from the saved final degree. Without this, ng is
+        # undefined below (getUniqueSequencesByStartSymbol, saveNGramPOMMSearchRes).
+        ng = ngFinal
+
+    # get all unique sequences of length ng
+    seqDict, symU = getUniqueSequencesByStartSymbol(osIn, ng + 1)
 
     def mergeStateJJtoII(ii, jj, N, SnumVisTestIn, PTestIn):
         """
@@ -607,7 +693,6 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=[1, 0.1, 0.1], Pcut=0.0
         for kk in range(N):
             if kk == ii or kk == jj:
                 continue
-
             PTest[ii, kk] = ai * Pold[ii, kk] + aj * Pold[jj, kk]
 
         # 2. Correct merged self-transition.
@@ -622,7 +707,6 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=[1, 0.1, 0.1], Pcut=0.0
         for kk in range(N):
             if kk == ii or kk == jj:
                 continue
-
             PTest[kk, ii] = Pold[kk, ii] + Pold[kk, jj]
             PTest[kk, jj] = 0.0
 
@@ -630,8 +714,8 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=[1, 0.1, 0.1], Pcut=0.0
         PTest[ii, jj] = 0.0
 
         # 5. Deactivate jj.
-        # You currently redirect deleted state jj to end state.
-        # This is okay if removeUnreachableStates will remove jj later.
+        # Deleted state jj is redirected to the end state; this is fine as
+        # long as removeUnreachableStates removes jj afterwards.
         PTest[jj, :] = 0.0
         PTest[:, jj] = 0.0
         PTest[jj, 1] = 1.0
@@ -642,14 +726,23 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=[1, 0.1, 0.1], Pcut=0.0
 
         return SnumVisTest, PTest
 
-    # Testing merging all states with the symbol to find symbols only need one state
+    ###
+    # (2) Testing Markov symbols
+    ###
+
+    # Testing merging all states with the symbol to find symbols that only need one state
     print('Testing merging all states with the same symbol...')
     for sm in symU:
+
+        if sm in sm_markov:
+            print(f'    sym {sm} already tested. skipping')
+            continue
 
         N = len(S)
         iid = np.where(sm == np.array(S))[0]
 
         if len(iid) <= 1:
+            sm_markov.append(sm)   # record trivial cases too, so resume skips them
             continue
 
         print(' ')
@@ -665,19 +758,31 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=[1, 0.1, 0.1], Pcut=0.0
         PTest = normP(PTest)
 
         pv, PBs, PbT = getPVSampledSeqsPOMM(S, PTest, osIn, nSample=nSample)
-        print(f'     pv=', pv, ' Pb sampled range=(', round(PBs.min(), 3), round(PBs.max(), 3), ') seq Pb=', round(PbT, 3))
+        print('     pv=', pv, ' Pb sampled range=(', round(PBs.min(), 3),
+              round(PBs.max(), 3), ') seq Pb=', round(PbT, 3))
 
         if pv >= pValue_intermediate:
             print(' Markov symbol. Mergers accepted. \n')
             S, P, iids = removeUnreachableStates(S, PTest, returniid=True)
             SnumVis = [SnumVisTest[k] for k in iids]
         else:
-            print(' Mergers rejected.\n')            
+            print(' Mergers rejected.\n')
 
-    # clustering and merging states with the same symbol and similary distributions of future sequences. 
+        sm_markov.append(sm)
+        if fnSaveIntermediate is not None:
+            saveIntermediateData(ngStart, ngFinal, S, P, SnumVis, pv, PBs, PbT,
+                                 sm_markov, sm_merged, sm_deleted, fnSaveIntermediate)
+
+    ###
+    # (3) Merging states.
+    ###
+
+    # clustering and merging states with the same symbol and similar
+    # distributions of future sequences.
     S0 = S.copy()
     SnumVis0 = SnumVis.copy()
     P0 = P.copy()
+    pv0 = 0
 
     mmax, mmin, step = stateMergeParam
     if step <= 0:
@@ -689,14 +794,21 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=[1, 0.1, 0.1], Pcut=0.0
         mParams.append(vv)
         vv -= step
 
+    def tv_dist(u, v):
+        return 0.5 * np.sum(np.abs(u - v))
+
     for sm in symU:
+
+        if sm in sm_merged:
+            print(f'    sym {sm} has done merger tests. Skipping')
+            continue
 
         N = len(S)
         iid = np.where(sm == np.array(S))[0]
 
         if len(iid) <= 1:
+            sm_merged.append(sm)
             continue
-
 
         for mergeClusterDistThreshod in mParams:
 
@@ -708,7 +820,6 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=[1, 0.1, 0.1], Pcut=0.0
             SnumVisTest = SnumVis.copy()
 
             print(f'\nTesting mergeClusterDistThreshod: {mergeClusterDistThreshod:.4f}')
-
             print(' ')
             print(' merging states for sym  = ', sm)
 
@@ -729,9 +840,6 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=[1, 0.1, 0.1], Pcut=0.0
             row_sums[row_sums == 0] = 1.0
             X = Pseqs / row_sums
 
-            def tv_dist(u, v):
-                return 0.5 * sum(abs(u - v))
-
             D = pdist(X, metric=tv_dist)
             Z = linkage(D, method='average')
             labels = fcluster(Z, t=mergeClusterDistThreshod, criterion='distance')
@@ -750,7 +858,8 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=[1, 0.1, 0.1], Pcut=0.0
 
             PTest = normP(PTest, Pcut=Pcut)
             pv, PBs, PbT = getPVSampledSeqsPOMM(S, PTest, osIn, nSample=nSample)
-            print(f'     pv=', pv, ' Pb sampled range=(', round(PBs.min(), 3), round(PBs.max(), 3), ') seq Pb=', round(PbT, 3))
+            print('     pv=', pv, ' Pb sampled range=(', round(PBs.min(), 3),
+                  round(PBs.max(), 3), ') seq Pb=', round(PbT, 3))
 
             if pv >= pValue_intermediate:
                 print(' Mergers accepted. \n')
@@ -759,31 +868,159 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=[1, 0.1, 0.1], Pcut=0.0
                 S0 = S.copy()
                 P0 = P.copy()
                 SnumVis0 = SnumVis.copy()
-
+                pv0 = pv
                 break
             else:
                 print(' Mergers rejected. \n')
-                
-                   
-    pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nSample=nSample)
-    print(f'\nAfter merging sequence prob based merging, pv=', pv, ' Pb sampled range=(', round(PBs.min(), 3), round(PBs.max(), 3), ') seq Pb=', round(PbT, 3))
+        
+        sm_merged.append(sm)
+        if fnSaveIntermediate is not None:
+            saveIntermediateData(ngStart, ngFinal, S, P, SnumVis, pv, PBs, PbT,
+                                 sm_markov, sm_merged, sm_deleted, fnSaveIntermediate)
+    pv = pv0
+    S = S0.copy()
+    P = P0.copy()                                 
+
+    print('\nAfter sequence-prob based merging, pv=', pv, ' Pb sampled range=(',
+          round(PBs.min(), 3), round(PBs.max(), 3), ') seq Pb=', round(PbT, 3))
     print(f'S={S}\n')
-     
-    # test deleting state through grids.
-    #print('Further simplification with state deletion method...') 
-    res = MinPOMMSimpDeleteStates(S, osIn, nRerun = BWRerun, pValue=pValue, nSample=nSample)
-    if res != None:
-        S, P, pv, PBs, PbT, Pc = res               
+    if fnSaveIntermediate is not None:
+        # Checkpoint only; no stray sm_merged.append(sm) of a leaked loop variable.
+        saveIntermediateData(ngStart, ngFinal, S, P, SnumVis, pv, PBs, PbT,
+                             sm_markov, sm_merged, sm_deleted, fnSaveIntermediate)
+
+    ###
+    # (4) Test deleting states
+    ###
+
+    # test deleting states through grids.
+    # MinPOMMSimpDeleteStates re-reads the checkpoint file itself (the
+    # post-merge checkpoint just written above is authoritative), so it only
+    # needs fnSaveIntermediate here -- no sm_deleted / checkpointState kwargs.
+    res = MinPOMMSimpDeleteStates(S, osIn, nRerun=BWRerun, pValue=pValue,
+                                  nSample=nSample,
+                                  fnSaveIntermediate=fnSaveIntermediate)
+    if res is not None:
+        S, P, pv, PBs, PbT, Pc = res
         print(f'    After deleting states pv={pv:0.4f}')
-    
-    # final model.     
+
+    # final model.
     print(f'Found model S={S}')
-    print(f'pv={pv:.4f}') 
-    
-    if fnSave != '':
-        saveNGramPOMMSearchRes(S,P,ng,pv,PbT,SnumVis,fnSave)
+    print(f'pv={pv:.4f}')
+
+    if fnSave is not None:
+        saveNGramPOMMSearchRes(S, P, ng, pv, PbT, SnumVis, fnSave)
+        print(f'Removing the intermediate data file {fnSaveIntermediate}')
+        os.remove(fnSaveIntermediate)
 
     return S, P, pv, PBs, PbT
+
+    
+def MinPOMMSimpDeleteStates(S, osIn, nRerun=BWRerun, pValue=pValue, nSample=10000,
+                            fnSaveIntermediate=None):
+    """
+    Simplify by deleting states while keeping the model statistically
+    acceptable (p-value of the observed sequences stays above pValue).
+
+    Input parameters:
+        S     - initial POMM state vector (ignored if resuming from an
+                intermediate file: the file's state is authoritative)
+        osIn  - observed sequences
+        nRerun - number of times B-W is run with different seeds
+        nSample - number of sampled sequence sets for the p-value test
+        fnSaveIntermediate - checkpoint file written by NGramPOMMSearch;
+                if given, state is loaded from it and progress is saved
+                back to it after every accepted deletion and every
+                completed symbol
+
+    Returns
+        [S, P, pv, PBs, PbT, Pc] on success
+        None if no intermediate file was given and no deletion was accepted
+        (Pc is None unless at least one deletion was accepted in THIS call,
+        since Pc comes from the accepting B-W run)
+    """
+
+    print('\nTest deleting states...\n')
+
+    resumed = fnSaveIntermediate is not None
+    Pc = None
+    flag = 0
+
+    if resumed:
+        # The caller checkpoints the full state immediately before calling,
+        # so the file always reflects the current model -- including any
+        # deletions accepted in a previous, interrupted run of this stage.
+        (ngStart, ngFinal, S, P, SnumVis, pv, PBs, PbT,
+         sm_markov, sm_merged, sm_deleted) = readIntermediateData(fnSaveIntermediate)
+    else:
+        sm_deleted = []
+        # P, pv, PBs, PbT stay undefined until the first accepted deletion;
+        # they are only returned when flag == 1, which guarantees they exist.
+
+    syms = list(np.unique(S[2:]))
+
+    for sm in syms:
+
+        if sm in sm_deleted:
+            print(f'    sym {sm} already tested. Skipping.')
+            continue
+
+        while True:
+            iid = [ii for ii in range(len(S)) if S[ii] == sm]
+            if len(iid) <= 1:
+                break
+
+            kk = iid[0]
+            STest = S.copy()
+            STest = STest[:kk] + STest[kk + 1:]
+            print('\nTest removing state', kk, 'with sym', S[kk])
+
+            PTest, ml, PcTest, stdml, ML = BWPOMMCParallel(STest, osIn, nRerun=nRerun)
+            pvTest, PBsTest, PbTTest = getPVSampledSeqsPOMM(STest, PTest, osIn, nSample=nSample)
+
+            if pvTest >= pValue:
+                S = STest.copy()
+                P = PTest.copy()
+                pv = pvTest
+                PBs = PBsTest
+                PbT = PbTTest
+                Pc = PcTest
+                print(' Deletion accepted. pv=', pv, ' S=', S, ' len(S)=', len(S))
+                flag = 1
+
+                # Checkpoint after EVERY accepted deletion, not only per
+                # symbol: each B-W run is expensive, and an interruption
+                # between acceptances would otherwise lose the new model.
+                if resumed:
+                    saveIntermediateData(ngStart, ngFinal, S, P, SnumVis, pv, PBs, PbT,
+                                         sm_markov, sm_merged, sm_deleted,
+                                         fnSaveIntermediate)
+            else:
+                print(f' Rejected deletion. pv={pvTest:.4f}')
+                break   # no need for further deletion tests on this symbol
+
+        sm_deleted.append(sm)
+        if resumed:
+            saveIntermediateData(ngStart, ngFinal, S, P, SnumVis, pv, PBs, PbT,
+                                 sm_markov, sm_merged, sm_deleted, fnSaveIntermediate)
+
+    if resumed:
+        # The loaded state is authoritative even if no NEW deletion was
+        # accepted in this call: deletions accepted in a previous interrupted
+        # run are already folded into S, P, pv, PBs, PbT read from the file.
+        # Returning None here would silently discard them in the caller.
+        print('\nState after deletion stage S = ', S)
+        print(f'    After deleting states model pv= {pv}')
+        return [S, P, pv, PBs, PbT, Pc]
+
+    if flag == 1:
+        print('\nUpdated state S = ', S)
+        print(f'    After deleting states model pv= {pv}')
+        return [S, P, pv, PBs, PbT, Pc]
+    else:
+        print('\nNo updates')
+        return None    
+    
 
 
 # compute the most likely path of the state given the sequence
@@ -1445,61 +1682,7 @@ def computeAIC(S,P,osU,osK):
     AIC = 2*K - 2*ml
     return AIC
 
-  
-        
-    
-    
-"""         
- Simplify by deleting states and making sure that the maximum likelihood remains within bound. 
- Input parameters:
-    S - initial POMM
-    osIn - observed sequences
-    nRerun - number of times B-W is run with different seeds. 
- Return S, P, Pc    
-    S - state vector
-    P - transition probabilities
-    Pc - sequence completeness
-""" 
-    
-def MinPOMMSimpDeleteStates(S, osIn, nRerun = BWRerun, pValue=pValue, nSample=10000, fnSave=''):
-    
-    syms = list(np.unique(S[2:]))
-    flag = 0
-    for sm in syms:
-        while True:
-            iid = [ii for ii in range(len(S)) if S[ii] == sm]
-            if len(iid) <= 1:
-                break
-
-            kk = iid[0]
-            STest = S.copy()
-            STest = STest[:kk] + STest[kk+1:]
-            print('\nTest removing state', kk, 'with sym', S[kk])
-
-            PTest, ml, PcTest, stdml, ML = BWPOMMCParallel(STest, osIn, nRerun=nRerun)
-            pvTest, PBsTest, PbTTest = getPVSampledSeqsPOMM(STest, PTest, osIn, nSample=nSample)
-
-            if pvTest >= pValue:
-                S = STest.copy()
-                P = PTest.copy()
-                pv = pvTest
-                PBs = PBsTest
-                PbT = PbTTest
-                Pc = PcTest
-                print(' Deletion accepted. pv=', pv, ' S=', S)
-                flag = 1
-            else:
-                print(f' Rejected deletion. pv={pvTest:.4f}')
-                break  # no need for further deleting test. 
-
-    if flag == 1:                                    
-        print('\nUpdated state S = ',S)        
-        print(f'    After deleting states model pv= {pv}')
-        return [S, P, pv, PBs, PbT, Pc]  
-    else:
-        print('\nNo updates')
-        return None
-    
+      
 # save NGramPOMMSearch intermediate results to file. 
 def saveMinPOMMSimpDeleteStates(S,P,ng,pv,PbT,Pc,fnSave):
     if fnSave[-5:] != '.json':
@@ -3636,7 +3819,7 @@ def testPBRankPOMM():
                         
     osIn, repeatNumSeqs, symsNumeric, _ = getNumericalSequencesNonRepeat(seqsOrig,sylLabels) 
 
-    PBRankPOMM(osIn, ngramStart = 2, fnSave='testPBRankPOMM.dat')   
+    PBRankPOMM(osIn, ngramStart = 1, fnSave='testPBRankPOMM.dat')   
     
 """
     
@@ -3903,7 +4086,7 @@ def testPBnGramSearch():
                         
     osIn, repeatNumSeqs, symsNumeri, _ = getNumericalSequencesNonRepeat(seqsOrig,sylLabels) 
     
-    S, P, pv, PBs, PbT = PBnGramSearch(osIn, ngramStart = 2, fnSave='testPBnGramSearch.dat')
+    S, P, pv, PBs, PbT = PBnGramSearch(osIn, ngramStart = 1, fnSave='testPBnGramSearch.dat')
         
 def testGetNumericalSequencesNonRepeatCreateSyllableLabels():
     
@@ -3916,7 +4099,8 @@ def testGetNumericalSequencesNonRepeatCreateSyllableLabels():
     for seq, nseq in zip(seqs,numericSeqs):
         print(seq, nseq)
         
-    
+def testNGramPOMMSearch():
+    pass     
                     
 if __name__ == "__main__":
     
@@ -3925,4 +4109,8 @@ if __name__ == "__main__":
     
     #testPBnGramSearch()
     
-    testGetNumericalSequencesNonRepeatCreateSyllableLabels()
+    #testGetNumericalSequencesNonRepeatCreateSyllableLabels()
+    
+    testNGramPOMMSearch()
+    
+    
