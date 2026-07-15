@@ -17,7 +17,7 @@ Major update: 5/1/2026. Optimized C code for reduction of memory usage. Various 
     is automatically set in POMM.py. If needed to reduce CPU usage, change nProc in POMM.py. 
 
 Major update: 6/4/2026, 6/10/2026, 6/22/2026. Fixed bugs in BWPOMMC in libPOMMC.c, and in POMM.py increased BWRerun to 200 for more optimal transition matrix P, 
-    and fixed bugs in MinPOMMSimpDeleteStates. Reduced pValue to 0.01 to promote stability of the POMM from run to run. Increased pValue by 0.02 for testing models during the states merging. When deleting states, pValue is used. This enhances robustness of the inference process. 
+    and fixed bugs in MinPOMMSimpDeleteStates. Reduced pValue to 0.01 to promote stability of the POMM from run to run. Increased pValue by 0.01 for testing models during the states merging. When deleting states, pValue is used. This enhances robustness of the inference process. 
 
 Minor update: 7/9/2026. Removed sparcity control in BWPOMMC.     
    
