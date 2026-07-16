@@ -189,7 +189,7 @@ static double compute_llk(int nSeq, int *osIn, int *osK, int N,
 
 double BWPOMMC(int nSeq, int *osIn, int nU, int *osK, int N, int *stateSyms,
                double *P, double pTol, int maxIter, int randSeed,
-               int *nUnreachable)
+               int *nUnreachable, int *nIterations)
 {
     int i, istep;
     int prunedThisIter;          /* unused output of run_em_iteration */
@@ -209,6 +209,7 @@ double BWPOMMC(int nSeq, int *osIn, int nU, int *osK, int N, int *stateSyms,
     allowed = (int *) malloc(N * N * sizeof(int));
     if (allowed == NULL) {
         if (nUnreachable) *nUnreachable = -1;
+        if (nIterations) *nIterations = 0;
         return -INFINITY;
     }
     for (i = 0; i < N * N; i++) {
@@ -250,6 +251,9 @@ double BWPOMMC(int nSeq, int *osIn, int nU, int *osK, int N, int *stateSyms,
                       logA, x, os, &nUnr);
 
     if (nUnreachable) *nUnreachable = nUnr;
+    if (nIterations) {
+        *nIterations = (istep < maxIter) ? (istep + 1) : maxIter;
+    }
 
     free(logA);
     free(logB);
@@ -1669,4 +1673,3 @@ ThreeArrays* constructNGramPOMMC(int nSeq, int *osIn, int ng)
 
 
   
-

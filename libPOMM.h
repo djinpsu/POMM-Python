@@ -45,12 +45,14 @@ Parameters.
 	pTol - maximum changes in P for stopping iteration.
 	maxIter - maximum iterations. 
 	randSeed - seed for random number generator. If -1, assumes that P is setup already. 
+	nUnreachable - output count of unreachable unique sequences.
+	nIterations - output number of EM iterations performed.
 Returns log-likelihood of the sequences
 */
 
 double BWPOMMC(int nSeq, int *osIn, int nU, int *osK, int N, int *stateSyms,
                double *P, double pTol, int maxIter, int randSeed,
-               int *nUnreachable);
+               int *nUnreachable, int *nIterations);
 
 
 /*

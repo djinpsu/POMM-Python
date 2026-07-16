@@ -77,6 +77,7 @@ nProc = nCPU - 1 if nCPU > 1 else 1
 # load the C program library. 
 lib = ctypes.CDLL(str(Path(__file__).resolve().parent / "libPOMM.so"))
 
+
 # PARAMETERS
 betaTotalVariationDistance = 0.2    # the factor for modifying the sequence completeness adding the total 
                                     # variation distance, to include the effects of transition probability dependent context dependence
@@ -581,7 +582,9 @@ pTolence = 1e-6                     # smallest transition probability.
 
 
 def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=(1.0, 0.1, 0.1), Pcut=0.001,
-                    nSample=nSamples, ngramStart=1, fnSave=None, nRerun=BWRerun):
+                    nSample=nSamples, ngramStart=1, fnSave=None, nRerun=BWRerun,
+                    samplingSeed=None, bwSeed=None, bwMaxSteps=10000,
+                    bwPTol=1e-6):
 
     print('Constructing POMM with nGram transition diagram...')
     flag = 0
@@ -630,7 +633,9 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=(1.0, 0.1, 0.1), Pcut=0
             print('\nTesting nGram size ng = ', ng)
             S, P, SnumVis = constructNGramPOMMC(osIn, ng)
             P = normP(P, Pcut=Pcut)
-            pv, PBs, PbT = getPVSampledSeqsPOMM(S, P, osIn, nSample=nSample)
+            pv, PBs, PbT = getPVSampledSeqsPOMM(
+                S, P, osIn, nSample=nSample, samplingSeed=samplingSeed
+            )
             print(' Pb sampled range=(', round(PBs.min(), 3), round(PBs.max(), 3),
                   ') seq Pb=', round(PbT, 3))
             print(' S=', S)
@@ -774,7 +779,7 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=(1.0, 0.1, 0.1), Pcut=0
         PTest = normP(PTest)
 
         pvTest, PBsTest, PbTTest = getPVSampledSeqsPOMM(
-            S, PTest, osIn, nSample=nSample
+            S, PTest, osIn, nSample=nSample, samplingSeed=samplingSeed
         )
         print('     pv=', pvTest, ' Pb sampled range=(', round(PBsTest.min(), 3),
               round(PBsTest.max(), 3), ') seq Pb=', round(PbTTest, 3))
@@ -885,7 +890,7 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=(1.0, 0.1, 0.1), Pcut=0
 
             PTest = normP(PTest, Pcut=Pcut)
             pvTest, PBsTest, PbTTest = getPVSampledSeqsPOMM(
-                S, PTest, osIn, nSample=nSample
+                S, PTest, osIn, nSample=nSample, samplingSeed=samplingSeed
             )
             print('     pv=', pvTest, ' Pb sampled range=(', round(PBsTest.min(), 3),
                   round(PBsTest.max(), 3), ') seq Pb=', round(PbTTest, 3))
@@ -930,7 +935,10 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=(1.0, 0.1, 0.1), Pcut=0
     # needs fnSaveIntermediate here -- no sm_deleted / checkpointState kwargs.
     res = MinPOMMSimpDeleteStates(S, osIn, nRerun=nRerun, pValue=pValue,
                                   nSample=nSample,
-                                  fnSaveIntermediate=fnSaveIntermediate)
+                                  fnSaveIntermediate=fnSaveIntermediate,
+                                  samplingSeed=samplingSeed,
+                                  bwSeed=bwSeed, bwMaxSteps=bwMaxSteps,
+                                  bwPTol=bwPTol)
     if res is not None:
         if len(res) == 7:
             S, P, pv, PBs, PbT, Pc, SnumVis = res
@@ -958,7 +966,8 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=(1.0, 0.1, 0.1), Pcut=0
     return S, P, pv, PBs, PbT
     
 def MinPOMMSimpDeleteStates(S, osIn, nRerun=BWRerun, pValue=pValue, nSample=nSamples,
-                            fnSaveIntermediate=None):
+                            fnSaveIntermediate=None, samplingSeed=None,
+                            bwSeed=None, bwMaxSteps=10000, bwPTol=1e-6):
     """
     Simplify by deleting states while keeping the model statistically
     acceptable (p-value of the observed sequences stays above pValue).
@@ -1016,8 +1025,13 @@ def MinPOMMSimpDeleteStates(S, osIn, nRerun=BWRerun, pValue=pValue, nSample=nSam
             STest = STest[:kk] + STest[kk + 1:]
             print('\nTest removing state', kk, 'with sym', S[kk])
 
-            PTest, ml, PcTest, stdml, ML = BWPOMMCParallel(STest, osIn, nRerun=nRerun)
-            pvTest, PBsTest, PbTTest = getPVSampledSeqsPOMM(STest, PTest, osIn, nSample=nSample)
+            PTest, ml, PcTest, stdml, ML = BWPOMMCParallel(
+                STest, osIn, nRerun=nRerun, bwSeed=bwSeed,
+                maxSteps=bwMaxSteps, pTol=bwPTol
+            )
+            pvTest, PBsTest, PbTTest = getPVSampledSeqsPOMM(
+                STest, PTest, osIn, nSample=nSample, samplingSeed=samplingSeed
+            )
 
             if pvTest >= pValue:
                 S = STest.copy()
@@ -1169,11 +1183,11 @@ def computeModifiedSequenceCompleteness(S, P, osT):
     print(' Getting unique sequences...')
     osU, osK, symU = getUniqueSequences(osT)
 
-    print(' Preparing CSR P...')
     N = len(S)
-
     S = np.ascontiguousarray(S, dtype=np.int32)
+    print(' Computing PU...')
 
+    print(' Preparing CSR P...')
     P_csr = sparse.csr_matrix(P, dtype=np.float64)
     P_csr.sum_duplicates()
     P_csr.eliminate_zeros()
@@ -1182,30 +1196,17 @@ def computeModifiedSequenceCompleteness(S, P, osT):
     rowPtr = np.ascontiguousarray(P_csr.indptr, dtype=np.int32)
     colInd = np.ascontiguousarray(P_csr.indices, dtype=np.int32)
     val = np.ascontiguousarray(P_csr.data, dtype=np.float64)
-
     assert rowPtr.shape[0] == N + 1
     assert colInd.shape[0] == val.shape[0]
 
-    print(' Computing PU...')
-
     def worker(item):
         i, seq = item
-
         prob = computeSeqProbPOMMC_CSR_arrays(
-            N,
-            S,
-            rowPtr,
-            colInd,
-            val,
-            seq,
-            None,
-            None,
+            N, S, rowPtr, colInd, val, seq, None, None
         )
-
         return i, prob
 
     PU = np.zeros(len(osU), dtype=np.float64)
-
     with ThreadPoolExecutor(max_workers=nProc) as executor:
         for i, prob in executor.map(worker, enumerate(osU)):
             PU[i] = prob
@@ -1258,8 +1259,85 @@ lib.getModifiedSequenceCompletenessSamplingModelCSR_C.argtypes = [
 ]
 lib.getModifiedSequenceCompletenessSamplingModelCSR_C.restype = None
 
+
+class CSRMatrixC(ctypes.Structure):
+    _fields_ = [
+        ("N", ctypes.c_int),
+        ("nnz", ctypes.c_int),
+        ("rowPtr", ctypes.POINTER(ctypes.c_int)),
+        ("colInd", ctypes.POINTER(ctypes.c_int)),
+        ("val", ctypes.POINTER(ctypes.c_double)),
+    ]
+
+
+lib.getUniqueSeqProbsPOMM_CSR.argtypes = [
+    ctypes.c_int,
+    ctypes.POINTER(ctypes.c_int),
+    ctypes.POINTER(CSRMatrixC),
+]
+lib.getUniqueSeqProbsPOMM_CSR.restype = ctypes.POINTER(ctypes.c_double)
+lib.freeArray.argtypes = [ctypes.POINTER(ctypes.c_double)]
+lib.freeArray.restype = None
+
+
+def getUniqueSequenceProbabilitiesPOMMC(S, P):
+    """Enumerate model-sequence probabilities with libPOMM."""
+    S = np.ascontiguousarray(S, dtype=np.int32)
+    N = len(S)
+    P = np.asarray(P, dtype=np.float64).reshape((N, N))
+    P_csr = sparse.csr_matrix(P, dtype=np.float64)
+    P_csr.sum_duplicates()
+    P_csr.eliminate_zeros()
+    P_csr.sort_indices()
+
+    rowPtr = np.ascontiguousarray(P_csr.indptr, dtype=np.int32)
+    colInd = np.ascontiguousarray(P_csr.indices, dtype=np.int32)
+    val = np.ascontiguousarray(P_csr.data, dtype=np.float64)
+    matrix = CSRMatrixC(
+        N,
+        int(P_csr.nnz),
+        rowPtr.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+        colInd.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+        val.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+    )
+
+    result_ptr = lib.getUniqueSeqProbsPOMM_CSR(
+        ctypes.c_int(N),
+        S.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+        ctypes.byref(matrix),
+    )
+    if not result_ptr:
+        raise MemoryError("C sequence-probability enumeration failed")
+
+    try:
+        n_unique = int(result_ptr[0])
+        if n_unique <= 0:
+            raise ValueError("the model has no enumerable terminal sequences")
+        probabilities = np.ctypeslib.as_array(
+            result_ptr, shape=(n_unique + 1,)
+        )[1:].copy()
+    finally:
+        lib.freeArray(result_ptr)
+
+    probabilities = np.asarray(probabilities, dtype=np.float32)
+    probabilities /= probabilities.sum(dtype=np.float32)
+    return probabilities
+
+def _cSamplingWorkerSeeds(nWorkers, samplingSeed=None):
+    """Create independent C RNG seeds, deterministically when requested."""
+    if nWorkers < 0:
+        raise ValueError("nWorkers must be nonnegative")
+
+    seedSequence = np.random.SeedSequence(samplingSeed)
+    workerSequences = seedSequence.spawn(nWorkers)
+    return [
+        int(sequence.generate_state(1, dtype=np.uint32)[0] & np.uint32(0x7fffffff))
+        for sequence in workerSequences
+    ]
+
+
 def getModifiedSequenceCompletenessSamplingModelC(params):
-    S, P, nSeq, nSample = params
+    S, P, nSeq, nSample, randSeed = params
 
     # State-symbol vector
     S = np.ascontiguousarray(S, dtype=np.int32)
@@ -1296,8 +1374,6 @@ def getModifiedSequenceCompletenessSamplingModelC(params):
 
     PBs = np.zeros(nSample, dtype=np.float64)
 
-    randSeed = int(time.time()) & 0x7fffffff    
-    
     lib.getModifiedSequenceCompletenessSamplingModelCSR_C(
         ctypes.c_int(nSeq),
         ctypes.c_int(N),
@@ -1313,8 +1389,8 @@ def getModifiedSequenceCompletenessSamplingModelC(params):
     )
 
     return PBs
-           
-                    
+
+
 def getMaxLenSeqs(osIn):
     maxLenSeqs = 0
     for ss in osIn:
@@ -1340,17 +1416,23 @@ pv, PBs, PbT = getPVSampledSeqsPOMM((S, P, osIn)
         PbT - sequence completeness of the observed sequences. 
         
 """
-def getPVSampledSeqsPOMM(S, P, osIn, nSample=10000):
-    NS = computeNumTasksProc(nSample, nProc)
+def getPVSampledSeqsPOMM(
+    S, P, osIn, nSample=10000, *, samplingSeed=None
+):
     N = len(osIn)
-    Params = [[S, P, N, NS[ii]] for ii in range(nProc)]
 
     print("\n Computing pv. Sampling...")
 
+    NS = computeNumTasksProc(nSample, nProc)
+    workerSeeds = _cSamplingWorkerSeeds(nProc, samplingSeed)
+    Params = [
+        [S, P, N, NS[ii], workerSeeds[ii]] for ii in range(nProc)
+    ]
     with Pool(processes=nProc) as pool:
-        res = pool.map(getModifiedSequenceCompletenessSamplingModelC, Params, chunksize=1)
-
-    PBs = [pb for PPBs in res for pb in PPBs]
+        res = pool.map(
+            getModifiedSequenceCompletenessSamplingModelC, Params, chunksize=1
+        )
+    PBs = np.asarray([pb for PPBs in res for pb in PPBs])
     PBs = np.sort(PBs)
 
     print("getting PbT...")
@@ -1906,6 +1988,7 @@ lib.BWPOMMC.argtypes = [
     ctypes.c_int,                       # maxIter
     ctypes.c_int,                       # randSeed
     ctypes.POINTER(ctypes.c_int),       # nUnreachable (out)
+    ctypes.POINTER(ctypes.c_int),       # nIterations (out)
 ]
 lib.BWPOMMC.restype = ctypes.c_double
 
@@ -1934,13 +2017,14 @@ def BWPOMMCFun(Params):
     # call the C function.
 
     nUnreachable = ctypes.c_int(0)
+    nIterations = ctypes.c_int(0)
 
     ml = lib.BWPOMMC(ctypes.c_int(nSeq), osIn.ctypes.data_as(ctypes.POINTER(ctypes.c_int)), \
                      ctypes.c_int(nU), osK.ctypes.data_as(ctypes.POINTER(ctypes.c_int)), \
                      ctypes.c_int(N), S.ctypes.data_as(ctypes.POINTER(ctypes.c_int)), \
                      P.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), \
                      ctypes.c_double(pTol), ctypes.c_int(maxIter), ctypes.c_int(randSeed), \
-                     ctypes.byref(nUnreachable))
+                     ctypes.byref(nUnreachable), ctypes.byref(nIterations))
 
     t2 = time.time()
     #print(f'     BWPOMMC used {t2-t1:.4f} sec')
@@ -1949,7 +2033,7 @@ def BWPOMMCFun(Params):
     #print('ml C=',ml)
     #print('ml P=',ml2)
                     
-    return (ml,P)                   
+    return ml, P, nIterations.value
 
 
 def initPBigramJitter(osU, osK, S, N, P, jitterAmp=0.2, edgeFloor=1e-3, randSeed=None):
@@ -2053,45 +2137,57 @@ def initPBigramJitter(osU, osK, S, N, P, jitterAmp=0.2, edgeFloor=1e-3, randSeed
 #   Pc, sequence completeness of the input sequences on the model
 #   stdML, standard deviation of the maximum likelihood achieved for all runs. 
 #   MK, list of maximum likelihoods
-def BWPOMMCParallel(S, osInO, Pcut=0.0, maxSteps=10000, pTol=1e-6, nRerun=BWRerun):
+def BWPOMMCParallel(
+    S, osInO, Pcut=0.0, maxSteps=10000, pTol=1e-6,
+    nRerun=BWRerun, bwSeed=None
+):
     osIn = osInO.copy()
     N = len(S)
     S = np.array(S)
     osU, osK, symU = getUniqueSequences(osIn)
     
     Ps = []
+    rng = np.random.default_rng(bwSeed) if bwSeed is not None else None
     for irun in range(nRerun):
         # ---- bigram + jitter initialization of P -------------------------------
         # Fills P from symbol-bigram statistics and breaks same-symbol degeneracy.
         # Respects P's incoming nonzero pattern as the candidate support; pass an
         # all-zero P for full connectivity. Seeded off randSeed (independent of the
         # C RNG) so each restart gets different jitter.
-        P = normP(rand(N,N))
-        randSeed = int(rand() * 100000);
+        if rng is None:
+            P = normP(rand(N, N))
+            randSeed = int(rand() * 100000)
+        else:
+            P = normP(rng.random((N, N)))
+            randSeed = int(rng.integers(0, 100000))
 
         P = initPBigramJitter(osU, osK, S, N, P, jitterAmp=0.2, edgeFloor=1e-3,
-                              randSeed=randSeed)        
+                              randSeed=randSeed)
         Ps.append([osU,osK,S,P,pTol,maxSteps])
 
-    # parallel conputation of multiple runs. 
-    pool = Pool(processes = nProc)
-    res = pool.map(BWPOMMCFun,Ps,chunksize = 1)
-    pool.close()
-    pool.join()
+    # Parallel computation of independent CPU runs in libPOMM.c.
+    with Pool(processes=nProc) as pool:
+        res = pool.map(BWPOMMCFun, Ps, chunksize=1)
+    fitted_Ps = np.asarray([P for (_, P, _) in res])
+    ML = np.asarray([ml for (ml, _, _) in res], dtype=float)
+    iterations = np.asarray([it for (_, _, it) in res], dtype=int)
+    print(
+        f' Baum-Welch CPU runs: {nRerun}; iterations='
+        f'{int(np.min(iterations))}-{int(np.max(iterations))}'
+    )
 
-    ML = np.array([ml for (ml, P) in res], dtype=float)
     finite = np.isfinite(ML)
 
     if not finite.any():
         # Every rerun diverged: with the state(s) deleted, the model structurally
         # cannot generate some observed sequence (P(seq)=0 -> log-lik = -inf for
         # any P). Signal an invalid candidate so the search rejects this deletion.
-        P = res[0][1]
+        P = fitted_Ps[0]
         Pc, _ = computeSequenceCompleteness(S, P, osIn, osU)
         return P, -np.inf, Pc, np.nan, ML
 
     iid     = int(np.argmax(np.where(finite, ML, -np.inf)))   # best finite run
-    P       = res[iid][1]
+    P       = fitted_Ps[iid]
     Pc, Pcomp = computeSequenceCompleteness(S, P, osIn, osU)
     mlSigma = np.std(ML[finite])      # spread over successful reruns only
     mlMax   = ML[iid]
@@ -2184,7 +2280,7 @@ def printP(P):
 # Returns osU, PU
 #   osU, unique sequences
 #   PU, probabilities of unique sequences.  
-def getSequenceProbModel(S,P,osIn,osU = []):
+def getSequenceProbModel(S, P, osIn, osU=[]):
     S = np.array(S)
     N = len(S)
     if len(osU) == 0:
@@ -2214,7 +2310,7 @@ def getSequenceProbModel(S,P,osIn,osU = []):
 # Outputs
 #   Pc, sequence completeness
 #   Ps, probabilities of the sequences
-def computeSequenceCompleteness(S,P,osIn,osU = []):
+def computeSequenceCompleteness(S, P, osIn, osU=[]):
     S = np.array(S)
     N = len(S)
     if len(osU) == 0:
@@ -3760,7 +3856,7 @@ def PBRankPOMM(osIn, ngramStart = 1, fnSave=''):
                 res = pool.map(BWPOMMCFun,Ps,chunksize = 1)
                 pool.close()
                 pool.join()     
-                ML = [ml for (ml, P) in res]
+                ML = [ml for (ml, P, iterations) in res]
                 ML = np.array(ML)
                 iid = ML.argmax()
                 P = res[iid][1]
@@ -4138,13 +4234,21 @@ def testGetNumericalSequencesNonRepeatCreateSyllableLabels():
     for seq, nseq in zip(seqs,numericSeqs):
         print(seq, nseq)
         
-def testNGramPOMMSearch():
+def testNGramPOMMSearch(
+    samplingSeed=12345, nSample=10000, nRerun=BWRerun,
+    saveResults=True, makePlot=True, openPlot=True, bwSeed=12345,
+    bwMaxSteps=10000, bwPTol=1e-6
+):
     
-    filename = '0mA_annot_observed_sequences.txt'
-    filenameSave = f'{filename}.POMM.dat'
+    fn = '0mA_annot_observed_sequences.txt'
+    #fn = '150mA_u_left_tl.annot_observed_sequences.txt'
+    
 
-    print(f'\nLoading sequeces from {filename}')
-    with open(filename,'r') as f:
+    
+    filenameSave = f'{fn}.POMM.dat'
+
+    print(f'\nLoading sequeces from {fn}')
+    with open(fn,'r') as f:
         dat = f.read()
     dat = dat.strip()
     
@@ -4157,21 +4261,33 @@ def testNGramPOMMSearch():
     print('print inferring POMM using the N-gram method ...')
     stateMergeParam=[1.0,0.1,0.1]
     Pcut = 0.001
-    nSample = 10000
-    S, P, pv, PBs, PbT = NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=stateMergeParam, Pcut=Pcut, nSample =nSample, fnSave=filenameSave)
-    
-    print(f"Saving the POMM to {filenameSave}")
-    with open(filenameSave, "wb") as f:
-        pickle.dump([S, P, pv, PBs, PbT, osIn, Syms, Syms2], f)
+    S, P, pv, PBs, PbT = NGramPOMMSearch(
+        osIn, pValue=pValue, stateMergeParam=stateMergeParam, Pcut=Pcut,
+        nSample=nSample, nRerun=nRerun,
+        fnSave=filenameSave if saveResults else None,
+        samplingSeed=samplingSeed, bwSeed=bwSeed, bwMaxSteps=bwMaxSteps,
+        bwPTol=bwPTol
+    )
 
-    fnFig = f'{filenameSave}.pdf'
-    print(f'Saving transition diagram to {fnFig}')
-    S2 = [0,-1]
-    for ss in S[2:]:
-        S2.append(Syms2[ss]) 
-    plotTransitionDiagram(S2,P,Pcut=0.001,filenamePDF=fnFig, \
-            removeUnreachable=False,markedStates=[],labelStates=0)                    
-    os.system(f'open {fnFig}')
+    if saveResults:
+        print(f"Saving the POMM to {filenameSave}")
+        with open(filenameSave, "wb") as f:
+            pickle.dump([S, P, pv, PBs, PbT, osIn, Syms, Syms2], f)
+
+    if makePlot:
+        fnFig = f'{filenameSave}.pdf'
+        print(f'Saving transition diagram to {fnFig}')
+        S2 = [0,-1]
+        for ss in S[2:]:
+            S2.append(Syms2[ss])
+        plotTransitionDiagram(
+            S2, P, Pcut=0.001, filenamePDF=fnFig,
+            removeUnreachable=False, markedStates=[], labelStates=0
+        )
+        if openPlot:
+            os.system(f'open {fnFig}')
+
+    return S, P, pv, PBs, PbT
     
                     
 if __name__ == "__main__":
@@ -4184,5 +4300,3 @@ if __name__ == "__main__":
     #testGetNumericalSequencesNonRepeatCreateSyllableLabels()
     
     testNGramPOMMSearch()
-    
-    
