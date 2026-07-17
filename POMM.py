@@ -2243,23 +2243,40 @@ def normP(P, Pcut=0.0):
                 P[i, :] /= ss
     return P
     
-# given the state transition matrix, generate the observed seqeunces.
-# Assumptionm, S[0], S[1] are the start and the end states. 
-def generateSequencePOMM(S,P,nseq):
+# given the state transition matrix, generate the observed sequences.
+# S[0] and S[1] are the start and end states.
+def generateSequencePOMM(S, P, nseq):
+    """Generate sequences while treating each transition row as weights.
+
+    Sampling from cumulative weights avoids ``multinomial`` rejecting rows
+    whose floating-point sum is microscopically greater than one.
+    """
+    P = np.asarray(P, dtype=np.float64)
     N = len(S)
+    if P.shape != (N, N):
+        raise ValueError(f"P must have shape ({N}, {N})")
     gs = []
-    for istep in range(nseq):
-        ids = 0 # start state. 
+    for _ in range(nseq):
+        ids = 0  # start state
         ss = []
-        while 1:
-            # sample the out going transition probabilities. 
-            iid = list(multinomial(1,P[ids,:])).index(1)
-            if iid == 1: # this is the end state.
+        while True:
+            weights = P[ids, :]
+            if not np.all(np.isfinite(weights)) or np.any(weights < 0.0):
+                raise ValueError(f"invalid transition weights in row {ids}")
+            total = np.sum(weights, dtype=np.float64)
+            if total <= 0.0:
+                raise ValueError(f"transition row {ids} has no positive weight")
+            cumulative = np.cumsum(weights, dtype=np.float64)
+            draw = np.random.random() * total
+            iid = int(np.searchsorted(cumulative, draw, side='right'))
+            if iid >= N:  # defensive guard for extreme rounding
+                iid = N - 1
+            if iid == 1:  # end state
                 break
             ss.append(S[iid])
-            ids = iid    
+            ids = iid
         gs.append(ss)
-    return gs   
+    return gs
 
 # print the transition matrix in a nice form. s
 def printP(P):
