@@ -928,7 +928,9 @@ void FindUniqueSequencesC_CSR(
         *Ps = NULL;
         *Seqs = NULL;
 
-        DeleteList(&allNodes);
+        /* allNodes owns both its list entries and their Node objects.
+           DeleteList frees only the entries, so use the owning cleanup here. */
+        FreeSequenceList(allNodes);
         return;
     }
 
