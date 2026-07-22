@@ -22,6 +22,8 @@ Major update: 6/4/2026, 6/10/2026, 6/22/2026. Fixed bugs in BWPOMMC in libPOMMC.
 Minor update: 7/9/2026. Removed sparcity control in BWPOMMC.     
 
 Major update: 7/16/2026. Fixed a bug in generating the random number seeds in Pb sampling. The inferenence is much more reliable now!
+
+Major update: 7/22/2026. NGramPOMMSearch. Now the inference is entirely based on state merging. No Baum-Welch algorithm is used. 
    
         Default POMM inferenece method
    
