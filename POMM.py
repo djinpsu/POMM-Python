@@ -20,7 +20,7 @@
                     
     2026-03-27  Major update on NGramPOMMSearch, which infers POMM from observed sequences. 
     
-    2026-06-04  Major update on BWPOMMC. Corrected bugs. Increaded BWRerun = 200, this is important for BW-algorithm to get correct transition matrix P. 
+    2026-06-04  Major update on BWPOMMC. Corrected bugs. Increased the default number of BW restarts to 200; multiple restarts are important for obtaining the correct transition matrix P. 
                 Use pValue = 0.01 for stability of POMMs inferred. 
                 
     2026-06-17  getNumericalSequencesNonRepeatCreateSyllableLabels(seqs)
@@ -50,20 +50,25 @@ import matplotlib.pyplot as plt
 plt.rcParams["pdf.use14corefonts"] = True
 # trigger core fonts for PS backend
 plt.rcParams["ps.useafm"] = True
+from scipy.cluster.hierarchy import linkage, fcluster, dendrogram
+from scipy.spatial.distance import pdist
 import pickle
 from numpy.random import multinomial
 import scipy.stats.distributions as dist
 import os
+import sys
 import json
 import threading
 from sklearn.decomposition import TruncatedSVD
 from sklearn.utils.extmath import randomized_svd        
 from scipy.sparse import csr_matrix
-from scipy.cluster.hierarchy import linkage, fcluster, dendrogram
-from scipy.spatial.distance import pdist
 from scipy import sparse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+is_mac = (sys.platform == "darwin")
+
+# C-only build: no GPU/Metal selection.
+
 
 # Number of available CPUs
 
@@ -83,12 +88,74 @@ betaTotalVariationDistance = 0.2    # the factor for modifying the sequence comp
                                     # variation distance, to include the effects of transition probability dependent context dependence
                                     # set this to 0, it becomes pure sequence completeness. 
 pValue = 0.01                       # p-value for accepting POMM based on the distributiuon of Pb.      
-BWRerun = 200                        # number of times Bohm-Welsh alogrith is ran. 
 nSamples = 10000                    # number of samples for getting pv from the Pbeta distribution.     
 pTolence = 1e-6                     # smallest transition probability.                      
                                     
 #print('In POMM, the total variation distance is weighted with the factor betaTotalVariationDistance=',betaTotalVariationDistance)
 #print('In POMM, pValue is set to ',pValue)
+
+
+_automaticPOMMBackends = None
+
+
+def selectPOMMBackends(refresh=False):
+    """C-only build: every stage uses the portable C backend."""
+    global _automaticPOMMBackends
+    if _automaticPOMMBackends is not None and not refresh:
+        return _automaticPOMMBackends.copy()
+
+    selected = {
+        "samplingBackend": "c",
+        "samplingDevice": None,
+        "sequenceBackend": "c",
+        "sequenceDevice": None,
+        "bwBackend": "c",
+        "bwDevice": None,
+        "reason": "C-only build (GPU/Metal disabled)",
+    }
+
+    _automaticPOMMBackends = selected
+    return selected.copy()
+
+def _resolvePOMMBackends(
+    samplingBackend, samplingDevice, sequenceBackend, sequenceDevice,
+    bwBackend, bwDevice, announce=False
+):
+    requested_auto = any(
+        str(backend).lower() == "auto"
+        for backend in (samplingBackend, sequenceBackend, bwBackend)
+    )
+    if not requested_auto:
+        return (
+            samplingBackend, samplingDevice, sequenceBackend, sequenceDevice,
+            bwBackend, bwDevice,
+        )
+
+    automatic = selectPOMMBackends()
+    if str(samplingBackend).lower() == "auto":
+        samplingBackend = automatic["samplingBackend"]
+        samplingDevice = automatic["samplingDevice"]
+    if str(sequenceBackend).lower() == "auto":
+        sequenceBackend = automatic["sequenceBackend"]
+        sequenceDevice = automatic["sequenceDevice"]
+    if str(bwBackend).lower() == "auto":
+        bwBackend = automatic["bwBackend"]
+        bwDevice = automatic["bwDevice"]
+
+    if announce:
+        print(
+            'POMM backends: '
+            f'sampling={samplingBackend}'
+            f'{f"/{samplingDevice}" if samplingDevice else ""}, '
+            f'sequence={sequenceBackend}'
+            f'{f"/{sequenceDevice}" if sequenceDevice else ""}, '
+            f'Baum-Welch={bwBackend} ({automatic["reason"]})'
+        )
+    return (
+        samplingBackend, samplingDevice, sequenceBackend, sequenceDevice,
+        bwBackend, bwDevice,
+    )
+
     
 """
 
@@ -114,7 +181,7 @@ pTolence = 1e-6                     # smallest transition probability.
         stateMergeParam - [maxV, minV, step], state merging parameter, max, min, and step stize. 
                                         Values tested from maxV to minV decreasing with stepSize. Stops for the fist pv > pValue. 
                                         The parameter ranges from 1 to 0. As it decreases, the model becomes more complex.
-                                        Adjust maxV, minV, step for your sequences. 
+                                        Adjust maxV, minV, step for your sequences.
 
         Return: 
         
@@ -124,7 +191,7 @@ pTolence = 1e-6                     # smallest transition probability.
         PBs - PBs sampled from the final model
         PbT - Pb of the observed sequences on the final model
 
-    MinPOMMSimpDeleteStates(S,osIn, nRerun = BWRerun, pValue=pValue, nSample=10000, fnSave='')
+    MinPOMMSimpDeleteStates(S,osIn, nRerun=50, pValue=pValue, nSample=10000, fnSave='')
         
          Simplify by deleting states and making sure that the maximum likelihood remains within bound. 
          Input parameters:
@@ -170,7 +237,7 @@ pTolence = 1e-6                     # smallest transition probability.
                 symU, symbols.
      
      
-        BWPOMMCParallel(S,osInO,maxSteps=5000,pTol=1e-6, nRerun=BWRerun)
+        BWPOMMCParallel(S,osInO,maxSteps=5000,pTol=1e-6, nRerun=50)
 
             Parallel version of BWPOMM, calling C function BWPOMMC from libPOMM.h   
             Inputs:
@@ -427,23 +494,6 @@ pTolence = 1e-6                     # smallest transition probability.
                 PSteps, nStep x (nSym+1) matrix. PSteps[:,0] is the probability of ending at the steps. 
      
      
-        MergeStatesRecalculateP(S,P,mergeInds,osT,maxIterBW=1000,nRerunBW=BWRerun)
-
-            merge states, keep the state vector structure but change the transition probability matrix
-            merge state ii to jj. The list is given in mergeInds
-            NOTE: merge is order dependent! Do not merge into empty state (1,2), (3,1) would be wrong because 1 is empty after (1,2). 
-            keep the connections, recalcuate the transition proabilities. 
-            recalculate the transition probabilities with input sequencnes. 
-            returns updated transition probabilties. 
-            Inputs:
-                S - state vector
-                P - transitinn probabilities
-                mergeInds - list of pair of indices (ii,jj), merging state ii to state jj. 
-                maxIterBW, nRerunBW, parameters for BW algorithm. 
-            Return:
-                P2 - transition matrix. 
-     
-     
         generateSequenceSamples(S,P,N,nSample=nSample)
 
             generegate nSample sets of N sequences from the POMM. 
@@ -538,7 +588,8 @@ pTolence = 1e-6                     # smallest transition probability.
 ###
 
 def saveIntermediateData(ngStart, ngFinal, S, P, SnumVis, pv, PBs, PbT,
-                         sm_markov, sm_merged, sm_deleted, fnSaveIntermediate):
+                         sm_markov, sm_merged, sm_deleted, fnSaveIntermediate,
+                         pairwise_complete=False):
     print(f'    Saving intermediate data to {fnSaveIntermediate}')
     res = {
         'ngStart': ngStart,
@@ -552,6 +603,7 @@ def saveIntermediateData(ngStart, ngFinal, S, P, SnumVis, pv, PBs, PbT,
         'sm_markov': sm_markov,
         'sm_merged': sm_merged,
         'sm_deleted': sm_deleted,
+        'pairwise_complete': pairwise_complete,
     }
     with open(fnSaveIntermediate, 'wb') as f:
         pickle.dump(res, f)
@@ -573,18 +625,22 @@ def readIntermediateData(fnSaveIntermediate):
         res['sm_markov'],
         res['sm_merged'],
         res.get('sm_deleted', []),   # tolerate pre-sm_deleted intermediate files
+        res.get('pairwise_complete', False),
     )
 
-pValue = 0.01                       # p-value for accepting POMM based on the distributiuon of Pb.      
-BWRerun = 200                        # number of times Bohm-Welsh alogrith is ran. 
-nSamples = 10000                    # number of samples for getting pv from the Pbeta distribution.     
-pTolence = 1e-6                     # smallest transition probability.                      
-
-
 def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=(1.0, 0.1, 0.1), Pcut=0.001,
-                    nSample=nSamples, ngramStart=1, fnSave=None, nRerun=BWRerun,
-                    samplingSeed=None, bwSeed=None, bwMaxSteps=10000,
-                    bwPTol=1e-6):
+                    nSample=nSamples, ngramStart=1, fnSave=None,
+                    samplingBackend="auto", samplingDevice=None, samplingSeed=None,
+                    samplingBatchSize=None, sequenceBackend="auto",
+                    sequenceDevice=None, bwBackend="auto", bwDevice=None,
+                    bwSeed=None, bwMaxSteps=10000, bwPTol=1e-6,
+                    bwIterationsPerDispatch=50, bwMemoryBudgetBytes=None):
+
+    (samplingBackend, samplingDevice, sequenceBackend, sequenceDevice,
+     bwBackend, bwDevice) = _resolvePOMMBackends(
+        samplingBackend, samplingDevice, sequenceBackend, sequenceDevice,
+        bwBackend, bwDevice, announce=True
+    )
 
     print('Constructing POMM with nGram transition diagram...')
     flag = 0
@@ -606,12 +662,14 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=(1.0, 0.1, 0.1), Pcut=0
         if os.path.exists(fnSaveIntermediate):
             print(f' Intermediate file exists. Continuing. For a fresh start, delete {fnSaveIntermediate}')
             (ngStart, ngFinal, S, P, SnumVis, pv, PBs, PbT,
-             sm_markov, sm_merged, sm_deleted) = readIntermediateData(fnSaveIntermediate)
+             sm_markov, sm_merged, sm_deleted,
+             pairwise_complete) = readIntermediateData(fnSaveIntermediate)
         else:
             ngFinal = 0
             ngStart = ngramStart
             S = P = SnumVis = pv = PBs = PbT = None
             sm_markov, sm_merged, sm_deleted = [], [], []
+            pairwise_complete = False
             saveIntermediateData(ngStart, ngFinal, S, P, SnumVis, pv, PBs, PbT,
                                  sm_markov, sm_merged, sm_deleted, fnSaveIntermediate)
     else:
@@ -620,6 +678,7 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=(1.0, 0.1, 0.1), Pcut=0
         ngStart = ngramStart
         S = P = SnumVis = pv = PBs = PbT = None
         sm_markov, sm_merged, sm_deleted = [], [], []
+        pairwise_complete = False
 
     pValue_intermediate = min(1.0, pValue + 0.01)
     print(f'\nIntermediate pValue_intermediate = {pValue_intermediate}. Final pValue: {pValue}')
@@ -634,7 +693,10 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=(1.0, 0.1, 0.1), Pcut=0
             S, P, SnumVis = constructNGramPOMMC(osIn, ng)
             P = normP(P, Pcut=Pcut)
             pv, PBs, PbT = getPVSampledSeqsPOMM(
-                S, P, osIn, nSample=nSample, samplingSeed=samplingSeed
+                S, P, osIn, nSample=nSample, samplingBackend=samplingBackend,
+                samplingDevice=samplingDevice, samplingSeed=samplingSeed,
+                samplingBatchSize=samplingBatchSize,
+                sequenceBackend=sequenceBackend, sequenceDevice=sequenceDevice
             )
             print(' Pb sampled range=(', round(PBs.min(), 3), round(PBs.max(), 3),
                   ') seq Pb=', round(PbT, 3))
@@ -779,7 +841,10 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=(1.0, 0.1, 0.1), Pcut=0
         PTest = normP(PTest)
 
         pvTest, PBsTest, PbTTest = getPVSampledSeqsPOMM(
-            S, PTest, osIn, nSample=nSample, samplingSeed=samplingSeed
+            S, PTest, osIn, nSample=nSample,
+            samplingBackend=samplingBackend, samplingDevice=samplingDevice,
+            samplingSeed=samplingSeed, samplingBatchSize=samplingBatchSize,
+            sequenceBackend=sequenceBackend, sequenceDevice=sequenceDevice
         )
         print('     pv=', pvTest, ' Pb sampled range=(', round(PBsTest.min(), 3),
               round(PBsTest.max(), 3), ') seq Pb=', round(PbTTest, 3))
@@ -859,14 +924,17 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=(1.0, 0.1, 0.1), Pcut=0
             if len(uSeqs) == 0:
                 continue
 
-            Pseqs = np.zeros((len(iid), len(uSeqs)))
-            for i, ii in enumerate(iid):
-                Pstart = P.copy()
-                Pstart[0, :] = 0.0
-                Pstart[0, ii] = 1.0
+            if sequenceBackend.lower() == "c":
+                Pseqs = np.zeros((len(iid), len(uSeqs)))
+                for i, ii in enumerate(iid):
+                    Pstart = P.copy()
+                    Pstart[0, :] = 0.0
+                    Pstart[0, ii] = 1.0
 
-                for j, ss in enumerate(uSeqs):
-                    Pseqs[i, j] = computeSequenceProbNoEnd(ss, S, Pstart)
+                    for j, ss in enumerate(uSeqs):
+                        Pseqs[i, j] = computeSequenceProbNoEnd(ss, S, Pstart)
+            else:
+                raise ValueError("C-only build: only sequenceBackend='c' is supported")
 
             row_sums = Pseqs.sum(axis=1, keepdims=True)
             row_sums[row_sums == 0] = 1.0
@@ -890,7 +958,10 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=(1.0, 0.1, 0.1), Pcut=0
 
             PTest = normP(PTest, Pcut=Pcut)
             pvTest, PBsTest, PbTTest = getPVSampledSeqsPOMM(
-                S, PTest, osIn, nSample=nSample, samplingSeed=samplingSeed
+                S, PTest, osIn, nSample=nSample,
+                samplingBackend=samplingBackend, samplingDevice=samplingDevice,
+                samplingSeed=samplingSeed, samplingBatchSize=samplingBatchSize,
+                sequenceBackend=sequenceBackend, sequenceDevice=sequenceDevice
             )
             print('     pv=', pvTest, ' Pb sampled range=(', round(PBsTest.min(), 3),
                   round(PBsTest.max(), 3), ') seq Pb=', round(PbTTest, 3))
@@ -906,7 +977,7 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=(1.0, 0.1, 0.1), Pcut=0
                 break
             else:
                 print(' Mergers rejected. \n')
-        
+
         sm_merged.append(sm)
         if fnSaveIntermediate is not None:
             saveIntermediateData(ngStart, ngFinal, S0, P0, SnumVis0,
@@ -922,37 +993,128 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=(1.0, 0.1, 0.1), Pcut=0
     print(f'S={S}\n')
     if fnSaveIntermediate is not None:
         # Checkpoint only; no stray sm_merged.append(sm) of a leaked loop variable.
-        saveIntermediateData(ngStart, ngFinal, S, P, SnumVis, pv, PBs, PbT,
-                             sm_markov, sm_merged, sm_deleted, fnSaveIntermediate)
+        saveIntermediateData(
+            ngStart, ngFinal, S, P, SnumVis, pv, PBs, PbT,
+            sm_markov, sm_merged, sm_deleted, fnSaveIntermediate,
+            pairwise_complete=pairwise_complete
+        )
 
     ###
-    # (4) Test deleting states
+    # (4) Pairwise merging
     ###
 
-    # test deleting states through grids.
-    # MinPOMMSimpDeleteStates re-reads the checkpoint file itself (the
-    # post-merge checkpoint just written above is authoritative), so it only
-    # needs fnSaveIntermediate here -- no sm_deleted / checkpointState kwargs.
-    res = MinPOMMSimpDeleteStates(S, osIn, nRerun=nRerun, pValue=pValue,
-                                  nSample=nSample,
-                                  fnSaveIntermediate=fnSaveIntermediate,
-                                  samplingSeed=samplingSeed,
-                                  bwSeed=bwSeed, bwMaxSteps=bwMaxSteps,
-                                  bwPTol=bwPTol)
-    if res is not None:
-        if len(res) == 7:
-            S, P, pv, PBs, PbT, Pc, SnumVis = res
-        elif len(res) == 6:
-            S, P, pv, PBs, PbT, Pc = res
-            # The deleted state indices are unavailable, so the old counts
-            # cannot be mapped reliably onto the new state space.
-            SnumVis = None
-        else:
-            raise ValueError(
-                "MinPOMMSimpDeleteStates must return 6 values, or 7 values "
-                "including post-deletion SnumVis"
+    # Test every pair of states that emits the same symbol. Each round uses the
+    # same current model for all tests, and only the acceptable candidate with
+    # the largest p-value is committed. After a merge, rebuild the pairs because
+    # state indices and candidate behavior have changed.
+    #
+    # C-only build: each candidate is evaluated with the C sampler in a plain
+    # per-candidate loop.
+    if pairwise_complete:
+        print('\nPairwise merging already completed. Skipping.')
+    else:
+        print('\nTesting all same-symbol state pairs...')
+        pairwise_round = 0
+
+        while True:
+            pairwise_round += 1
+            print(f'\nPairwise merging round {pairwise_round}')
+
+            # Build every same-symbol candidate pair for the CURRENT model.
+            candidates = []
+            for sm in symU:
+                iid = np.where(sm == np.array(S))[0]
+                if len(iid) <= 1:
+                    continue
+                for i in range(len(iid) - 1):
+                    for j in range(i + 1, len(iid)):
+                        ii = iid[i]
+                        jj = iid[j]
+                        PTest = P.copy()
+                        SnumVisTest = SnumVis.copy()
+                        SnumVisTest, PTest = mergeStateJJtoII(
+                            ii, jj, len(S), SnumVisTest, PTest
+                        )
+                        PTest = normP(PTest, Pcut=Pcut)
+                        candidates.append({
+                            'ii': ii, 'jj': jj, 'sm': sm,
+                            'P': PTest, 'SnumVis': SnumVisTest,
+                        })
+
+            n_pairs_tested = len(candidates)
+            if n_pairs_tested == 0:
+                pairwise_complete = True
+                print(' No same-symbol pairs remain. Pairwise merging is complete.')
+                if fnSaveIntermediate is not None:
+                    saveIntermediateData(
+                        ngStart, ngFinal, S, P, SnumVis, pv, PBs, PbT,
+                        sm_markov, sm_merged, sm_deleted,
+                        fnSaveIntermediate, pairwise_complete=pairwise_complete
+                    )
+                break
+
+            # ---- evaluate all candidates (C path) ----------------------------
+            results = []
+            for cand in candidates:
+                pvTest, PBsTest, PbTTest = getPVSampledSeqsPOMM(
+                    S, cand['P'], osIn, nSample=nSample,
+                    samplingBackend=samplingBackend,
+                    samplingDevice=samplingDevice,
+                    samplingSeed=samplingSeed,
+                    samplingBatchSize=samplingBatchSize,
+                    sequenceBackend=sequenceBackend,
+                    sequenceDevice=sequenceDevice
+                )
+                r = dict(cand)
+                r.update({'pv': pvTest, 'PBs': PBsTest, 'PbT': PbTTest})
+                results.append(r)
+
+            # ---- pick the acceptable candidate with the largest p-value ------
+            best_candidate = None
+            for r in results:
+                status = ('candidate' if r['pv'] >= pValue else 'rejected')
+                print(f" Pair ({r['ii']}, {r['jj']}) sym {r['sm']}: "
+                      f"pv={r['pv']:.4f} (need >= {pValue:.4f}) [{status}]")
+                if r['pv'] < pValue:
+                    continue
+                if best_candidate is None or r['pv'] > best_candidate['pv']:
+                    best_candidate = r
+
+            if best_candidate is None:
+                pairwise_complete = True
+                print(f' No acceptable pair after testing {n_pairs_tested} '
+                      f'pairs. Pairwise merging is complete.')
+                if fnSaveIntermediate is not None:
+                    saveIntermediateData(
+                        ngStart, ngFinal, S, P, SnumVis, pv, PBs, PbT,
+                        sm_markov, sm_merged, sm_deleted,
+                        fnSaveIntermediate, pairwise_complete=pairwise_complete
+                    )
+                break
+
+            ii = best_candidate['ii']
+            jj = best_candidate['jj']
+            sm = best_candidate['sm']
+            print(f" Accepting pair ({ii}, {jj}) for symbol {sm} with "
+                  f"pv={best_candidate['pv']:.4f}.")
+
+            S, P, iids = removeUnreachableStates(
+                S, best_candidate['P'], returniid=True
             )
-        print(f'    After deleting states pv={pv:0.4f}')
+            SnumVis = [best_candidate['SnumVis'][k] for k in iids]
+            pv = best_candidate['pv']
+            PBs = best_candidate['PBs']
+            PbT = best_candidate['PbT']
+
+            print(f' Pair accepted. S={S}; len(S)={len(S)}')
+
+            if fnSaveIntermediate is not None:
+                saveIntermediateData(
+                    ngStart, ngFinal, S, P, SnumVis, pv, PBs, PbT,
+                    sm_markov, sm_merged, sm_deleted,
+                    fnSaveIntermediate, pairwise_complete=False
+                )
+
 
     # final model.
     print(f'Found model S={S}')
@@ -965,9 +1127,14 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=(1.0, 0.1, 0.1), Pcut=0
 
     return S, P, pv, PBs, PbT
     
-def MinPOMMSimpDeleteStates(S, osIn, nRerun=BWRerun, pValue=pValue, nSample=nSamples,
-                            fnSaveIntermediate=None, samplingSeed=None,
-                            bwSeed=None, bwMaxSteps=10000, bwPTol=1e-6):
+def MinPOMMSimpDeleteStates(S, osIn, nRerun=50, pValue=pValue, nSample=nSamples,
+                            fnSaveIntermediate=None, samplingBackend="auto",
+                            samplingDevice=None, samplingSeed=None,
+                            samplingBatchSize=None, sequenceBackend="auto",
+                            sequenceDevice=None, bwBackend="auto", bwDevice=None,
+                            bwSeed=None, bwMaxSteps=10000, bwPTol=1e-6,
+                            bwIterationsPerDispatch=50,
+                            bwMemoryBudgetBytes=None):
     """
     Simplify by deleting states while keeping the model statistically
     acceptable (p-value of the observed sequences stays above pValue).
@@ -990,6 +1157,12 @@ def MinPOMMSimpDeleteStates(S, osIn, nRerun=BWRerun, pValue=pValue, nSample=nSam
         since Pc comes from the accepting B-W run)
     """
 
+    (samplingBackend, samplingDevice, sequenceBackend, sequenceDevice,
+     bwBackend, bwDevice) = _resolvePOMMBackends(
+        samplingBackend, samplingDevice, sequenceBackend, sequenceDevice,
+        bwBackend, bwDevice
+    )
+
     print('\nTest deleting states...\n')
 
     resumed = fnSaveIntermediate is not None
@@ -1001,9 +1174,11 @@ def MinPOMMSimpDeleteStates(S, osIn, nRerun=BWRerun, pValue=pValue, nSample=nSam
         # so the file always reflects the current model -- including any
         # deletions accepted in a previous, interrupted run of this stage.
         (ngStart, ngFinal, S, P, SnumVis, pv, PBs, PbT,
-         sm_markov, sm_merged, sm_deleted) = readIntermediateData(fnSaveIntermediate)
+         sm_markov, sm_merged, sm_deleted,
+         pairwise_complete) = readIntermediateData(fnSaveIntermediate)
     else:
         sm_deleted = []
+        SnumVis = None
         # P, pv, PBs, PbT stay undefined until the first accepted deletion;
         # they are only returned when flag == 1, which guarantees they exist.
 
@@ -1026,11 +1201,17 @@ def MinPOMMSimpDeleteStates(S, osIn, nRerun=BWRerun, pValue=pValue, nSample=nSam
             print('\nTest removing state', kk, 'with sym', S[kk])
 
             PTest, ml, PcTest, stdml, ML = BWPOMMCParallel(
-                STest, osIn, nRerun=nRerun, bwSeed=bwSeed,
-                maxSteps=bwMaxSteps, pTol=bwPTol
+                STest, osIn, nRerun=nRerun, bwBackend=bwBackend,
+                bwDevice=bwDevice, bwSeed=bwSeed, maxSteps=bwMaxSteps,
+                pTol=bwPTol,
+                bwIterationsPerDispatch=bwIterationsPerDispatch,
+                bwMemoryBudgetBytes=bwMemoryBudgetBytes
             )
             pvTest, PBsTest, PbTTest = getPVSampledSeqsPOMM(
-                STest, PTest, osIn, nSample=nSample, samplingSeed=samplingSeed
+                STest, PTest, osIn, nSample=nSample,
+                samplingBackend=samplingBackend, samplingDevice=samplingDevice,
+                samplingSeed=samplingSeed, samplingBatchSize=samplingBatchSize,
+                sequenceBackend=sequenceBackend, sequenceDevice=sequenceDevice
             )
 
             if pvTest >= pValue:
@@ -1040,6 +1221,8 @@ def MinPOMMSimpDeleteStates(S, osIn, nRerun=BWRerun, pValue=pValue, nSample=nSam
                 PBs = PBsTest
                 PbT = PbTTest
                 Pc = PcTest
+                if SnumVis is not None:
+                    SnumVis = SnumVis[:kk] + SnumVis[kk + 1:]
                 print(' Deletion accepted. pv=', pv, ' S=', S, ' len(S)=', len(S))
                 flag = 1
 
@@ -1047,17 +1230,22 @@ def MinPOMMSimpDeleteStates(S, osIn, nRerun=BWRerun, pValue=pValue, nSample=nSam
                 # symbol: each B-W run is expensive, and an interruption
                 # between acceptances would otherwise lose the new model.
                 if resumed:
-                    saveIntermediateData(ngStart, ngFinal, S, P, SnumVis, pv, PBs, PbT,
-                                         sm_markov, sm_merged, sm_deleted,
-                                         fnSaveIntermediate)
+                    saveIntermediateData(
+                        ngStart, ngFinal, S, P, SnumVis, pv, PBs, PbT,
+                        sm_markov, sm_merged, sm_deleted, fnSaveIntermediate,
+                        pairwise_complete=pairwise_complete
+                    )
             else:
                 print(f' Rejected deletion. pv={pvTest:.4f}')
                 break   # no need for further deletion tests on this symbol
 
         sm_deleted.append(sm)
         if resumed:
-            saveIntermediateData(ngStart, ngFinal, S, P, SnumVis, pv, PBs, PbT,
-                                 sm_markov, sm_merged, sm_deleted, fnSaveIntermediate)
+            saveIntermediateData(
+                ngStart, ngFinal, S, P, SnumVis, pv, PBs, PbT,
+                sm_markov, sm_merged, sm_deleted, fnSaveIntermediate,
+                pairwise_complete=pairwise_complete
+            )
 
     if resumed:
         # The loaded state is authoritative even if no NEW deletion was
@@ -1179,7 +1367,9 @@ def computeSeqProbPOMMC_CSR_arrays(N, S, rowPtr, colInd, val, seq, PU=None, ii=N
     return prob    
 
 # compute the modified sequence completeness
-def computeModifiedSequenceCompleteness(S, P, osT):
+def computeModifiedSequenceCompleteness(
+    S, P, osT, *, sequenceBackend="c", sequenceDevice=None
+):
     print(' Getting unique sequences...')
     osU, osK, symU = getUniqueSequences(osT)
 
@@ -1187,29 +1377,32 @@ def computeModifiedSequenceCompleteness(S, P, osT):
     S = np.ascontiguousarray(S, dtype=np.int32)
     print(' Computing PU...')
 
-    print(' Preparing CSR P...')
-    P_csr = sparse.csr_matrix(P, dtype=np.float64)
-    P_csr.sum_duplicates()
-    P_csr.eliminate_zeros()
-    P_csr.sort_indices()
+    if sequenceBackend.lower() == "c":
+        print(' Preparing CSR P...')
+        P_csr = sparse.csr_matrix(P, dtype=np.float64)
+        P_csr.sum_duplicates()
+        P_csr.eliminate_zeros()
+        P_csr.sort_indices()
 
-    rowPtr = np.ascontiguousarray(P_csr.indptr, dtype=np.int32)
-    colInd = np.ascontiguousarray(P_csr.indices, dtype=np.int32)
-    val = np.ascontiguousarray(P_csr.data, dtype=np.float64)
-    assert rowPtr.shape[0] == N + 1
-    assert colInd.shape[0] == val.shape[0]
+        rowPtr = np.ascontiguousarray(P_csr.indptr, dtype=np.int32)
+        colInd = np.ascontiguousarray(P_csr.indices, dtype=np.int32)
+        val = np.ascontiguousarray(P_csr.data, dtype=np.float64)
+        assert rowPtr.shape[0] == N + 1
+        assert colInd.shape[0] == val.shape[0]
 
-    def worker(item):
-        i, seq = item
-        prob = computeSeqProbPOMMC_CSR_arrays(
-            N, S, rowPtr, colInd, val, seq, None, None
-        )
-        return i, prob
+        def worker(item):
+            i, seq = item
+            prob = computeSeqProbPOMMC_CSR_arrays(
+                N, S, rowPtr, colInd, val, seq, None, None
+            )
+            return i, prob
 
-    PU = np.zeros(len(osU), dtype=np.float64)
-    with ThreadPoolExecutor(max_workers=nProc) as executor:
-        for i, prob in executor.map(worker, enumerate(osU)):
-            PU[i] = prob
+        PU = np.zeros(len(osU), dtype=np.float64)
+        with ThreadPoolExecutor(max_workers=nProc) as executor:
+            for i, prob in executor.map(worker, enumerate(osU)):
+                PU[i] = prob
+    else:
+        raise ValueError("C-only build: only sequenceBackend='c' is supported")
 
     print(' Done.')
 
@@ -1281,7 +1474,7 @@ lib.freeArray.restype = None
 
 
 def getUniqueSequenceProbabilitiesPOMMC(S, P):
-    """Enumerate model-sequence probabilities with libPOMM."""
+    """Enumerate model-sequence probabilities once for a sampling backend."""
     S = np.ascontiguousarray(S, dtype=np.int32)
     N = len(S)
     P = np.asarray(P, dtype=np.float64).reshape((N, N))
@@ -1417,26 +1610,34 @@ pv, PBs, PbT = getPVSampledSeqsPOMM((S, P, osIn)
         
 """
 def getPVSampledSeqsPOMM(
-    S, P, osIn, nSample=10000, *, samplingSeed=None
+    S, P, osIn, nSample=10000, *, samplingBackend="c",
+    samplingDevice=None, samplingSeed=None, samplingBatchSize=None,
+    sequenceBackend="c", sequenceDevice=None
 ):
     N = len(osIn)
 
     print("\n Computing pv. Sampling...")
 
-    NS = computeNumTasksProc(nSample, nProc)
-    workerSeeds = _cSamplingWorkerSeeds(nProc, samplingSeed)
-    Params = [
-        [S, P, N, NS[ii], workerSeeds[ii]] for ii in range(nProc)
-    ]
-    with Pool(processes=nProc) as pool:
-        res = pool.map(
-            getModifiedSequenceCompletenessSamplingModelC, Params, chunksize=1
-        )
-    PBs = np.asarray([pb for PPBs in res for pb in PPBs])
+    if samplingBackend.lower() == "c":
+        NS = computeNumTasksProc(nSample, nProc)
+        workerSeeds = _cSamplingWorkerSeeds(nProc, samplingSeed)
+        Params = [
+            [S, P, N, NS[ii], workerSeeds[ii]] for ii in range(nProc)
+        ]
+        with Pool(processes=nProc) as pool:
+            res = pool.map(
+                getModifiedSequenceCompletenessSamplingModelC, Params, chunksize=1
+            )
+        PBs = np.asarray([pb for PPBs in res for pb in PPBs])
+    else:
+        raise ValueError("C-only build: only samplingBackend='c' is supported")
     PBs = np.sort(PBs)
 
     print("getting PbT...")
-    PbT = computeModifiedSequenceCompleteness(S, P, osIn)
+    PbT = computeModifiedSequenceCompleteness(
+        S, P, osIn, sequenceBackend=sequenceBackend,
+        sequenceDevice=sequenceDevice
+    )
     PbT += 1e-10
 
     jj = np.searchsorted(PBs, PbT, side='right')
@@ -1745,7 +1946,7 @@ def constructNGramPOMMC(osIn, ng):
     return S, P, SnumVis
     
         
-def AdjustTransProbWithBWKeepConnections(S,P,osIn,nRerun=BWRerun,Pcut=0.001):
+def AdjustTransProbWithBWKeepConnections(S,P,osIn,nRerun=50,Pcut=0.001):
     N = len(S)
     P, ml, Pc, stdml, ML = BWPOMMCParallel(S,osIn, Pcut= 0.001, nRerun=nRerun)    
     S, P = removeUnreachableStates(S,P)    
@@ -2026,6 +2227,11 @@ def BWPOMMCFun(Params):
                      ctypes.c_double(pTol), ctypes.c_int(maxIter), ctypes.c_int(randSeed), \
                      ctypes.byref(nUnreachable), ctypes.byref(nIterations))
 
+    # Reject fits that omit unreachable observations; their likelihood is not
+    # comparable with complete fits from other restarts.
+    if nUnreachable.value:
+        ml = -np.inf
+
     t2 = time.time()
     #print(f'     BWPOMMC used {t2-t1:.4f} sec')
     
@@ -2139,7 +2345,8 @@ def initPBigramJitter(osU, osK, S, N, P, jitterAmp=0.2, edgeFloor=1e-3, randSeed
 #   MK, list of maximum likelihoods
 def BWPOMMCParallel(
     S, osInO, Pcut=0.0, maxSteps=10000, pTol=1e-6,
-    nRerun=BWRerun, bwSeed=None
+    nRerun=50, bwBackend="auto", bwDevice=None, bwSeed=None,
+    bwIterationsPerDispatch=50, bwMemoryBudgetBytes=None
 ):
     osIn = osInO.copy()
     N = len(S)
@@ -2147,6 +2354,9 @@ def BWPOMMCParallel(
     osU, osK, symU = getUniqueSequences(osIn)
     
     Ps = []
+    initial_Ps = []
+    if not isinstance(nRerun, (int, np.integer)) or nRerun <= 0:
+        raise ValueError("nRerun must be a positive integer")
     rng = np.random.default_rng(bwSeed) if bwSeed is not None else None
     for irun in range(nRerun):
         # ---- bigram + jitter initialization of P -------------------------------
@@ -2163,16 +2373,25 @@ def BWPOMMCParallel(
 
         P = initPBigramJitter(osU, osK, S, N, P, jitterAmp=0.2, edgeFloor=1e-3,
                               randSeed=randSeed)
+        initial_Ps.append(P.copy())
         Ps.append([osU,osK,S,P,pTol,maxSteps])
 
-    # Parallel computation of independent CPU runs in libPOMM.c.
-    with Pool(processes=nProc) as pool:
-        res = pool.map(BWPOMMCFun, Ps, chunksize=1)
+    backend_name = bwBackend.lower()
+    if backend_name == "auto":
+        backend_name = "c"
+    if backend_name != "c":
+        raise ValueError("C-only build: bwBackend must be 'c' or 'auto'")
+
+    # Parallel computation of independent CPU runs.
+    pool = Pool(processes=nProc)
+    res = pool.map(BWPOMMCFun, Ps, chunksize=1)
+    pool.close()
+    pool.join()
     fitted_Ps = np.asarray([P for (_, P, _) in res])
     ML = np.asarray([ml for (ml, _, _) in res], dtype=float)
     iterations = np.asarray([it for (_, _, it) in res], dtype=int)
     print(
-        f' Baum-Welch CPU runs: {nRerun}; iterations='
+        f' Baum-Welch backend: C; restarts={nRerun}; iterations='
         f'{int(np.min(iterations))}-{int(np.max(iterations))}'
     )
 
@@ -2297,11 +2516,16 @@ def printP(P):
 # Returns osU, PU
 #   osU, unique sequences
 #   PU, probabilities of unique sequences.  
-def getSequenceProbModel(S, P, osIn, osU=[]):
+def getSequenceProbModel(
+    S, P, osIn, osU=[], *, sequenceBackend="c", sequenceDevice=None
+):
     S = np.array(S)
     N = len(S)
     if len(osU) == 0:
         osU,osK,symU = getUniqueSequences(osIn)
+    if sequenceBackend.lower() != "c":
+        raise ValueError("C-only build: only sequenceBackend='c' is supported")
+
     PU = np.zeros(len(osU))
     for kk in range(len(osU)):
         ss = np.array(osU[kk])
@@ -2327,11 +2551,16 @@ def getSequenceProbModel(S, P, osIn, osU=[]):
 # Outputs
 #   Pc, sequence completeness
 #   Ps, probabilities of the sequences
-def computeSequenceCompleteness(S, P, osIn, osU=[]):
+def computeSequenceCompleteness(
+    S, P, osIn, osU=[], *, sequenceBackend="c", sequenceDevice=None
+):
     S = np.array(S)
     N = len(S)
     if len(osU) == 0:
         osU,osK,symU = getUniqueSequences(osIn)
+    if sequenceBackend.lower() != "c":
+        raise ValueError("C-only build: only sequenceBackend='c' is supported")
+
     Pc = 0
     Ps = []
     for ss in osU:
@@ -2639,7 +2868,8 @@ def getNumericalSequencesNonRepeat(seqs,syllableLabels):
     return osIn, repeatNumSeqs, Syms, Syms2     
     
 # get numerical sequences with no repeats from symbol sequences seqs
-# if a symbol 'A' is repeated n times, a new symbol is created 'A_n'
+# if a symbol 'A' is repeated n times, and n>1, a new symbol is created 'A_n'
+# otherwise use 'A'. 
 # Inputs:
 #   seqs - symbol sequences
 # Returns
@@ -2664,12 +2894,18 @@ def getNumericalSequencesNonRepeatCreateSyllableLabels(seqs):
             if lb == prev:
                 rn += 1
             else:
-                sym = f"{prev}_{rn}"
+                if rn > 1:
+                    sym = f"{prev}_{rn}"
+                else:
+                    sym = prev 
                 cs.append(sym)
                 uniqueSymbols.add(sym)
                 prev = lb
                 rn = 1
-        sym = f"{prev}_{rn}"          # flush the final run
+        if rn > 1:
+            sym = f"{prev}_{rn}"          # flush the final run
+        else:
+            sym = prev 
         cs.append(sym)
         uniqueSymbols.add(sym)
         compoundSeqs.append(cs)
@@ -2677,13 +2913,15 @@ def getNumericalSequencesNonRepeatCreateSyllableLabels(seqs):
     # Deterministic ordering: sort by (base symbol, repeat count) so that
     # 'a_2' precedes 'a_10' (lexicographic sort would not).
     def sortKey(s):
-        base, _, cnt = s.rpartition('_')
-        return (base, int(cnt))
-    syllableLabels = sorted(uniqueSymbols, key=sortKey)
-
+        base, separator, count = s.rpartition("_")
+        if separator and count.isdigit():
+            return (base, 1, int(count))
+        return (s, 0, 0)    
+        
     # 1-indexed numbering, consistent with the reference function.
     Syms = {}
     Syms2 = {}
+    syllableLabels = sorted(uniqueSymbols, key=sortKey)
     for i, sym in enumerate(syllableLabels):
         Syms[sym] = i + 1
         Syms2[i + 1] = sym
@@ -2909,36 +3147,6 @@ def MergeStates(S,P,mergeInds):
     P2 = normP(P2)
     return P2
 
-# merge states, keep the state vector structure but change the transition probability matrix
-# merge state ii to jj. The list is given in mergeInds
-# NOTE: merge is order dependent! Do not merge into empty state (1,2), (3,1) would be wrong because 1 is empty after (1,2). 
-# keep the connections, recalcuate the transition proabilities. 
-# recalculate the transition probabilities with input sequencnes. 
-# returns updated transition probabilties. 
-# Inputs:
-#   S - state vector
-#   P - transitinn probabilities
-#   mergeInds - list of pair of indices (ii,jj), merging state ii to state jj. 
-#   osT - observed sequences. 
-# Return:
-#   P2 - transition matrix. 
-def MergeStatesRecalculateP(S,P,mergeInds,osT,maxIterBW=1000,nRerunBW=BWRerun,Pcut=0.0):
-    P = normP(P, Pcut=Pcut)
-    P2 = P.copy()
-    for (ii,jj) in mergeInds:
-        print('Merging state ',ii,' to ',jj)
-        # all ins are merged.
-        P2[:,jj] = P2[:,jj]+P2[:,ii]
-        # all outs are merged. 
-        P2[jj,:] = P2[jj,:]+P2[ii,:]
-        # disconnect state ii
-        P2[:,ii] = 0
-        P2[ii,:] = 0
-    P2 = normP(P2, Pcut=Pcut)
-    print('Recalculating the transition probabilities...')
-    P2, ml, Pc, stdml, ML = BWPOMMCParallel(S,osT,maxSteps=maxIterBW, nRerun=nRerunBW)
-    return P2
-
 # remove unique sequences with probability smaller than pCut. 
 def RemoveRareSequences(osIn, pCut = 0.001):
     print('Deleting sequences with probabilty smaller than ',pCut)
@@ -3040,7 +3248,7 @@ def plotSequenceLengthDistribution(seqs,fn=''):
     plt.bar(xx,yy,color='gray')
     plt.xlabel('Seq Length')
     plt.ylabel('Counts')
-    if fn != '':
+    if fn != '' and is_mac:
         print('Saving figure to ',fn)
         plt.savefig(fn)     
         os.system(f'open {fn}')
@@ -3327,7 +3535,7 @@ def getLabels(seqs):
         
 
 # connstruct POMMs for each motif sequences.    
-def constructPOMMsMotifSeqs(motifSeqs,nRerun=BWRerun,pValue=0.05,nSample=10000):
+def constructPOMMsMotifSeqs(motifSeqs,pValue=0.05,nSample=10000):
     
     motifPOMMs = {}
     motifPOMMs['motifLabels'] = motifSeqs['motifLabels']
@@ -3387,7 +3595,7 @@ def printSequences(osIn, Syms2):
         
 
 # get the POMM with the motif sequences.        
-def getMotifPOMM(osIn,motifSyllabels,nRerun=BWRerun,pValue=pValue,nSample=10000):
+def getMotifPOMM(osIn,motifSyllabels,pValue=pValue,nSample=10000):
     print('\nGetting motif sequences ...')
     motifSeqs = []
     motifSeqsCollect = []
@@ -3433,12 +3641,12 @@ def getMotifPOMM(osIn,motifSyllabels,nRerun=BWRerun,pValue=pValue,nSample=10000)
 #   pv - pValue
 #   PBs - sampled Pb
 #   PbT - Pb of the original seqeuences. 
-def MinPOMMmotif(osIn,motifSyllabels,nRerun=BWRerun,pValue=pValue,nSample=10000):
+def MinPOMMmotif(osIn,motifSyllabels,nRerun=50,pValue=pValue,nSample=10000):
 
     startSyms = getStartingSyllables(osIn)
     motifSyllabels = list(np.unique(motifSyllabels + startSyms))
 
-    Sm, Pm, motifSeqs, motifSeqsCollect = getMotifPOMM(osIn,motifSyllabels,nRerun=nRerun,pValue=pValue,nSample=nSample)
+    Sm, Pm, motifSeqs, motifSeqsCollect = getMotifPOMM(osIn,motifSyllabels,pValue=pValue,nSample=nSample)
     print('Motif level POMM Sm=',Sm)
         
     # get the motif sequences. 
@@ -3456,7 +3664,7 @@ def MinPOMMmotif(osIn,motifSyllabels,nRerun=BWRerun,pValue=pValue,nSample=10000)
             mSeqs[ss].append(motifSeqsCollect[ii][jj])
 
     # construct motif sequences.        
-    motifPOMMs = constructPOMMsMotifSeqs(mSeqs,nRerun=nRerun,pValue=pValue,nSample=nSample)
+    motifPOMMs = constructPOMMsMotifSeqs(mSeqs,pValue=pValue,nSample=nSample)
 
     S = []
     for ii in range(2,len(Sm)):
@@ -4252,20 +4460,18 @@ def testGetNumericalSequencesNonRepeatCreateSyllableLabels():
         print(seq, nseq)
         
 def testNGramPOMMSearch(
-    samplingSeed=12345, nSample=10000, nRerun=BWRerun,
-    saveResults=True, makePlot=True, openPlot=True, bwSeed=12345,
-    bwMaxSteps=10000, bwPTol=1e-6
+    samplingBackend="auto", samplingDevice=None, samplingSeed=12345,
+    nSample=10000, saveResults=True, makePlot=True,
+    openPlot=True, sequenceBackend="auto", sequenceDevice=None,
+    bwBackend="auto", bwDevice=None, bwSeed=12345, bwMaxSteps=10000,
+    bwPTol=1e-6, bwIterationsPerDispatch=50, bwMemoryBudgetBytes=None
 ):
     
-    fn = '0mA_annot_observed_sequences.txt'
-    #fn = '150mA_u_left_tl.annot_observed_sequences.txt'
-    
+    filename = '0mA_annot_observed_sequences.txt'
+    filenameSave = f'{filename}.POMM.dat'
 
-    
-    filenameSave = f'{fn}.POMM.dat'
-
-    print(f'\nLoading sequeces from {fn}')
-    with open(fn,'r') as f:
+    print(f'\nLoading sequeces from {filename}')
+    with open(filename,'r') as f:
         dat = f.read()
     dat = dat.strip()
     
@@ -4275,15 +4481,18 @@ def testNGramPOMMSearch(
     
     osIn, repeatNumSeqs, Syms, Syms2 = getNumericalSequencesNonRepeat(seqs, syllableLabels)
 
-    print('print inferring POMM using the N-gram method ...')
+    print('Inferring POMM using the N-gram method ...')
     stateMergeParam=[1.0,0.1,0.1]
     Pcut = 0.001
     S, P, pv, PBs, PbT = NGramPOMMSearch(
         osIn, pValue=pValue, stateMergeParam=stateMergeParam, Pcut=Pcut,
-        nSample=nSample, nRerun=nRerun,
-        fnSave=filenameSave if saveResults else None,
-        samplingSeed=samplingSeed, bwSeed=bwSeed, bwMaxSteps=bwMaxSteps,
-        bwPTol=bwPTol
+        nSample=nSample, fnSave=filenameSave if saveResults else None,
+        samplingBackend=samplingBackend, samplingDevice=samplingDevice,
+        samplingSeed=samplingSeed, sequenceBackend=sequenceBackend,
+        sequenceDevice=sequenceDevice, bwBackend=bwBackend,
+        bwDevice=bwDevice, bwSeed=bwSeed, bwMaxSteps=bwMaxSteps,
+        bwPTol=bwPTol, bwIterationsPerDispatch=bwIterationsPerDispatch,
+        bwMemoryBudgetBytes=bwMemoryBudgetBytes
     )
 
     if saveResults:
@@ -4301,7 +4510,7 @@ def testNGramPOMMSearch(
             S2, P, Pcut=0.001, filenamePDF=fnFig,
             removeUnreachable=False, markedStates=[], labelStates=0
         )
-        if openPlot:
+        if openPlot and is_mac:
             os.system(f'open {fnFig}')
 
     return S, P, pv, PBs, PbT
@@ -4316,4 +4525,6 @@ if __name__ == "__main__":
     
     #testGetNumericalSequencesNonRepeatCreateSyllableLabels()
     
+    # Backends are selected automatically. Explicit arguments can still be
+    # supplied to force a backend for benchmarking or debugging.
     testNGramPOMMSearch()
