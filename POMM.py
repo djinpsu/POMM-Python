@@ -27,14 +27,17 @@
                     This creates syllableLabels from seqs. If a symbol repeats n times, a new syllable label s_n is created. 
                     Returns numericSeqs, syllableLabels, Syms, Syms2
                     
-    2026-06-22  minor change in NGramPOMMSearch. Use pVaule+0.01 as the intermediate pValue when merging states. When deleting states, pValue is used. 
+    2026-06-22  Minor change in NGramPOMMSearch. Use pVaule+0.01 as the intermediate pValue when merging states. When deleting states, pValue is used. 
                 This reduces fluctations that make the final model unsable to pass pValue test. 
                 
-    2026-07-09  minor change in BWPOMMC. Removed sparcisity control.
+    2026-07-09  Minor change in BWPOMMC. Removed sparcisity control.
+    
+    2026-07-22  Major update on NGramPOMMSearch. Now the inference is entirely based on state merging. No Baum-Welch algorithm is used. 
     
    
 '''
 
+import subprocess
 from subprocess import call
 import numpy as np
 from numpy.random import rand, seed
@@ -65,9 +68,62 @@ from scipy.sparse import csr_matrix
 from scipy import sparse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from pomm_backend import (
+    available_sampling_backend,
+    baum_welch_restarts,
+    sample_modified_completeness,
+    sequence_probabilities,
+    _PROFILE_SAMPLING,
+    _sync_device,
+)
+
 is_mac = (sys.platform == "darwin")
 
-# C-only build: no GPU/Metal selection.
+if not is_mac: # only select GPU on Linux. 
+    
+    def configure_gpu():
+        cmd = [
+            "nvidia-smi",
+            "--query-gpu=index,memory.free,memory.total",
+            "--format=csv,noheader,nounits",
+        ]
+        out = subprocess.check_output(cmd, text=True).strip().splitlines()
+
+        # No GPU
+        if len(out) == 0:
+            print("No NVIDIA GPU found.")
+            return None
+
+        # One GPU only: do nothing special
+        if len(out) == 1:
+            print("Only one GPU found. No selection needed.")
+            return 0
+
+        # Multiple GPUs: pick the one with most free VRAM
+        best_idx = None
+        best_free = -1
+        best_total = -1
+
+        for line in out:
+            idx, free_mb, total_mb = [x.strip() for x in line.split(",")]
+            idx = int(idx)
+            free_mb = int(free_mb)
+            total_mb = int(total_mb)
+
+            print(f"GPU {idx}: free={free_mb} MB total={total_mb} MB")
+
+            if (free_mb > best_free) or (free_mb == best_free and total_mb > best_total):
+                best_idx = idx
+                best_free = free_mb
+                best_total = total_mb
+
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(best_idx)
+        print(f"Selected GPU {best_idx}")
+        return best_idx
+
+
+    # Must happen before importing torch/jax/tensorflow
+    configure_gpu()
 
 
 # Number of available CPUs
@@ -95,11 +151,28 @@ pTolence = 1e-6                     # smallest transition probability.
 #print('In POMM, pValue is set to ',pValue)
 
 
+# PyTorch is optional: it powers the MPS/CUDA sampling and sequence-probability
+# backends, but POMM runs C-only without it.  Import it ONCE here at module
+# scope so every function can reference `torch` directly -- no fragile, easily
+# lost per-function local imports.  When torch is not installed, `torch` stays
+# None and selectPOMMBackends() simply never selects a torch backend.
+try:
+    import torch
+except ImportError:
+    torch = None
+
+
 _automaticPOMMBackends = None
 
 
 def selectPOMMBackends(refresh=False):
-    """C-only build: every stage uses the portable C backend."""
+    """Select native GPU Baum-Welch when available, otherwise use C.
+
+    Baum-Welch selection is independent of PyTorch: native Metal is preferred
+    on macOS and native CUDA on other platforms. PyTorch MPS/CUDA is used for
+    sampling and sequence probabilities only when that PyTorch device exists.
+    Explicit backend arguments elsewhere always take precedence.
+    """
     global _automaticPOMMBackends
     if _automaticPOMMBackends is not None and not refresh:
         return _automaticPOMMBackends.copy()
@@ -111,8 +184,94 @@ def selectPOMMBackends(refresh=False):
         "sequenceDevice": None,
         "bwBackend": "c",
         "bwDevice": None,
-        "reason": "C-only build (GPU/Metal disabled)",
+        "reason": "portable C fallback",
     }
+
+    if sys.platform == "darwin":
+        try:
+            from pomm_metal import metal_available
+            native_available, native_error = metal_available()
+        except (ImportError, OSError, RuntimeError) as exc:
+            native_available = False
+            native_error = str(exc)
+
+        try:
+            torch_gpu_available = torch is not None and torch.backends.mps.is_available()
+        except (AttributeError, RuntimeError):
+            torch_gpu_available = False
+
+        if native_available:
+            selected.update({
+                "bwBackend": "metal",
+                "reason": "native Metal Baum-Welch is available",
+            })
+        if torch_gpu_available:
+            selected.update({
+                "samplingBackend": "torch",
+                "samplingDevice": "mps",
+                "sequenceBackend": "torch",
+                "sequenceDevice": "mps",
+            })
+
+        if native_available and torch_gpu_available:
+            selected["reason"] = "native Metal and PyTorch MPS are available"
+        elif native_available:
+            selected["reason"] = (
+                "native Metal Baum-Welch is available; sampling and sequence "
+                "probabilities use C because PyTorch MPS is unavailable"
+            )
+        elif torch_gpu_available:
+            selected["reason"] = (
+                f"PyTorch MPS is available; native Metal unavailable: {native_error}"
+            )
+        else:
+            selected["reason"] = (
+                f"Metal unavailable: {native_error}"
+                if native_error else "Metal is unavailable"
+            )
+    else:
+        try:
+            from pomm_cuda import cuda_available
+            native_available, native_error = cuda_available()
+        except (ImportError, OSError, RuntimeError, ValueError) as exc:
+            native_available = False
+            native_error = str(exc)
+
+        try:
+            torch_gpu_available = torch is not None and torch.cuda.is_available()
+        except (AttributeError, RuntimeError):
+            torch_gpu_available = False
+
+        if native_available:
+            selected.update({
+                "bwBackend": "cuda",
+                "bwDevice": "cuda",
+                "reason": "native CUDA Baum-Welch is available",
+            })
+        if torch_gpu_available:
+            selected.update({
+                "samplingBackend": "torch",
+                "samplingDevice": "cuda",
+                "sequenceBackend": "torch",
+                "sequenceDevice": "cuda",
+            })
+
+        if native_available and torch_gpu_available:
+            selected["reason"] = "native CUDA and PyTorch CUDA are available"
+        elif native_available:
+            selected["reason"] = (
+                "native CUDA Baum-Welch is available; sampling and sequence "
+                "probabilities use C because PyTorch CUDA is unavailable"
+            )
+        elif torch_gpu_available:
+            selected["reason"] = (
+                f"PyTorch CUDA is available; native CUDA unavailable: {native_error}"
+            )
+        else:
+            selected["reason"] = (
+                f"CUDA unavailable: {native_error}"
+                if native_error else "CUDA is unavailable"
+            )
 
     _automaticPOMMBackends = selected
     return selected.copy()
@@ -934,7 +1093,15 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=(1.0, 0.1, 0.1), Pcut=0
                     for j, ss in enumerate(uSeqs):
                         Pseqs[i, j] = computeSequenceProbNoEnd(ss, S, Pstart)
             else:
-                raise ValueError("C-only build: only sequenceBackend='c' is supported")
+                Pseqs = sequence_probabilities(
+                    S,
+                    P,
+                    uSeqs,
+                    end_required=False,
+                    initial_states=iid,
+                    backend=sequenceBackend,
+                    device=sequenceDevice,
+                )
 
             row_sums = Pseqs.sum(axis=1, keepdims=True)
             row_sums[row_sums == 0] = 1.0
@@ -1008,8 +1175,10 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=(1.0, 0.1, 0.1), Pcut=0
     # the largest p-value is committed. After a merge, rebuild the pairs because
     # state indices and candidate behavior have changed.
     #
-    # C-only build: each candidate is evaluated with the C sampler in a plain
-    # per-candidate loop.
+    # All candidates in a round share S and differ only in their merged rows/
+    # columns, so their nulls are stacked and evaluated in one batch on the
+    # torch/MPS device. Non-torch backends (or any MPS failure) fall back to the
+    # original per-candidate loop, which is numerically authoritative.
     if pairwise_complete:
         print('\nPairwise merging already completed. Skipping.')
     else:
@@ -1053,21 +1222,37 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=(1.0, 0.1, 0.1), Pcut=0
                     )
                 break
 
-            # ---- evaluate all candidates (C path) ----------------------------
-            results = []
-            for cand in candidates:
-                pvTest, PBsTest, PbTTest = getPVSampledSeqsPOMM(
-                    S, cand['P'], osIn, nSample=nSample,
-                    samplingBackend=samplingBackend,
-                    samplingDevice=samplingDevice,
-                    samplingSeed=samplingSeed,
-                    samplingBatchSize=samplingBatchSize,
-                    sequenceBackend=sequenceBackend,
-                    sequenceDevice=sequenceDevice
-                )
-                r = dict(cand)
-                r.update({'pv': pvTest, 'PBs': PBsTest, 'PbT': PbTTest})
-                results.append(r)
+            # ---- evaluate all candidates -------------------------------------
+            results = None
+            if str(samplingBackend).lower() == "torch":
+                try:
+                    results = _evaluatePairwiseCandidatesBatched(
+                        candidates, S, osIn, nSample,
+                        samplingDevice, samplingSeed, samplingBatchSize,
+                        sequenceBackend, sequenceDevice
+                    )
+                    print(f' Batched {n_pairs_tested} candidates on '
+                          f'{samplingDevice or "mps"}.')
+                except Exception as exc:
+                    print(f' Batched evaluation failed ({exc}); '
+                          f'falling back to per-candidate.')
+                    results = None
+
+            if results is None:
+                results = []
+                for cand in candidates:
+                    pvTest, PBsTest, PbTTest = getPVSampledSeqsPOMM(
+                        S, cand['P'], osIn, nSample=nSample,
+                        samplingBackend=samplingBackend,
+                        samplingDevice=samplingDevice,
+                        samplingSeed=samplingSeed,
+                        samplingBatchSize=samplingBatchSize,
+                        sequenceBackend=sequenceBackend,
+                        sequenceDevice=sequenceDevice
+                    )
+                    r = dict(cand)
+                    r.update({'pv': pvTest, 'PBs': PBsTest, 'PbT': PbTTest})
+                    results.append(r)
 
             # ---- pick the acceptable candidate with the largest p-value ------
             best_candidate = None
@@ -1402,7 +1587,14 @@ def computeModifiedSequenceCompleteness(
             for i, prob in executor.map(worker, enumerate(osU)):
                 PU[i] = prob
     else:
-        raise ValueError("C-only build: only sequenceBackend='c' is supported")
+        PU = sequence_probabilities(
+            S,
+            P,
+            osU,
+            end_required=True,
+            backend=sequenceBackend,
+            device=sequenceDevice,
+        )
 
     print(' Done.')
 
@@ -1584,6 +1776,287 @@ def getModifiedSequenceCompletenessSamplingModelC(params):
     return PBs
 
 
+def getModifiedSequenceCompletenessSamplingBackend(
+    S, P, nSeq, nSample, *, samplingBackend="numpy", samplingDevice=None,
+    samplingSeed=None, samplingBatchSize=None
+):
+    """Sample P_b through the backend-neutral NumPy/PyTorch implementation."""
+    probabilities = getUniqueSequenceProbabilitiesPOMMC(S, P)
+    backend, device = available_sampling_backend(samplingBackend, samplingDevice)
+    print(
+        f" Sampling backend: {backend} ({device}); "
+        f"enumerated sequences: {len(probabilities)}"
+    )
+    return sample_modified_completeness(
+        probabilities,
+        n_sequences=nSeq,
+        n_samples=nSample,
+        beta=betaTotalVariationDistance,
+        backend=backend,
+        device=device,
+        seed=samplingSeed,
+        batch_size=samplingBatchSize,
+    )
+
+
+# torch's CPU multinomial is single-threaded, so the batched draw splits the
+# sample (column) dimension across nProc worker threads -- multinomial releases
+# the GIL during the draw, so this scales near-linearly.  On by default; set
+# POMM_PARALLEL_DRAW=0 to force the serial single-call path for comparison.
+_PARALLEL_DRAW = os.environ.get("POMM_PARALLEL_DRAW", "1").lower() not in (
+    "0", "false", "no", "",
+)
+
+
+def _parallel_multinomial(Q_draw, total, root_seed, n_workers, executor):
+    """Draw an (nCand, total) index tensor, one categorical per row of Q_draw.
+
+    Splits `total` samples across `n_workers` column slices drawn concurrently,
+    each slice with its own generator seeded from `root_seed` so the result is
+    reproducible.  Falls back to one serial draw when n_workers <= 1.  The draws
+    are i.i.d. per row, so partitioning the sample axis is statistically exact.
+    """
+    nCand = Q_draw.shape[0]
+    if total <= 0:
+        return torch.empty((nCand, 0), dtype=torch.int64, device=Q_draw.device)
+
+    n_workers = max(1, min(n_workers, total))
+    if n_workers == 1 or executor is None:
+        g = torch.Generator(device=Q_draw.device)
+        g.manual_seed(root_seed)
+        return torch.multinomial(
+            Q_draw, num_samples=total, replacement=True, generator=g
+        )
+
+    bounds = [(total * i) // n_workers for i in range(n_workers + 1)]
+
+    def _slice(k):
+        cols = bounds[k + 1] - bounds[k]
+        if cols == 0:
+            return None
+        g = torch.Generator(device=Q_draw.device)
+        g.manual_seed(root_seed + k)
+        return torch.multinomial(
+            Q_draw, num_samples=cols, replacement=True, generator=g
+        )
+
+    parts = [p for p in executor.map(_slice, range(n_workers)) if p is not None]
+    return torch.cat(parts, dim=1)
+
+
+def _sampledPBFromProbabilitiesTorch(
+    probList, nSeq, nSample, device, generator=None,
+    maxSampleChunk=None, elementBudget=20_000_000
+):
+    """Batched null distribution of modified sequence completeness.
+
+    Reproduces sample_modified_completeness for a *set* of candidate models at
+    once. `probList` is a list of 1-D numpy arrays, each the normalized
+    enumerated terminal-sequence probability vector of one candidate model
+    (as returned by getUniqueSequenceProbabilitiesPOMMC).
+
+    Returns an (nCand, nSample) float32 numpy array, each row sorted ascending
+    to match getPVSampledSeqsPOMM's np.sort(PBs).
+
+    The statistic per (candidate, sample) mirrors computeModifiedSequence
+    Completeness exactly: sample nSeq sequences from the model's terminal
+    categorical, form the empirical distribution over sampled-unique
+    sequences, and
+
+        Pc = sum of model prob over sampled-unique sequences
+        dd = 0.5 * sum |modelProb/Pc - empiricalFreq| over sampled-unique
+        Pb = (1-beta)*Pc + beta*(1-dd)
+    """
+
+    beta = betaTotalVariationDistance
+    nCand = len(probList)
+    Mmax = max(len(p) for p in probList)
+
+    Q = torch.zeros((nCand, Mmax), dtype=torch.float32, device=device)
+    # Report the backend actually in use, mirroring phases 1-3.
+    print(
+        f" Sampling backend: torch ({Q.device}); "
+        f"candidates: {nCand}; enumerated sequences: {Mmax}"
+    )
+    
+    for c, p in enumerate(probList):
+        Q[c, :len(p)] = torch.as_tensor(p, dtype=torch.float32, device=device)
+    Q = Q / Q.sum(dim=1, keepdim=True).clamp_min(1e-30)
+
+    Qc = Q.unsqueeze(1)                    # (nCand, 1, Mmax)
+
+    # Draw on CPU when the compute device is MPS: torch.multinomial has no MPS
+    # kernel, and the on-device inverse-CDF alternative (rand + searchsorted) is
+    # far slower on MPS (searchsorted has no kernel -> CPU fallback with per-chunk
+    # host<->device copies).  Each candidate row is its own categorical, so a 2-D
+    # multinomial draws every candidate at once; only the small index tensor is
+    # copied back to `device`.
+    draws_device = torch.device("cpu") if Q.device.type == "mps" else Q.device
+    Q_draw = Q.to(draws_device)
+    draw_generator = generator
+    if generator is not None and generator.device != draws_device:
+        # Reseed a draws-device generator from the caller's seed so results stay
+        # reproducible even though the caller made its generator on `device`.
+        draw_generator = torch.Generator(device=draws_device)
+        draw_generator.manual_seed(generator.initial_seed())
+
+    # Root seed for the parallel draw: deterministic when the caller seeded,
+    # random otherwise.  Each chunk offsets it by a per-chunk stride so no two
+    # (chunk, worker) slices share a seed.
+    if draw_generator is not None:
+        base_root_seed = int(draw_generator.initial_seed())
+    else:
+        base_root_seed = int(torch.randint(0, 2 ** 31 - 1, (1,)).item())
+    n_draw_workers = nProc if _PARALLEL_DRAW else 1
+
+    # Chunk the nSample axis to bound the (nCand, chunk, Mmax) counts tensor.
+    per = max(Mmax, nSeq)
+    chunk = max(1, elementBudget // max(1, nCand * per))
+    if maxSampleChunk:
+        chunk = min(chunk, int(maxSampleChunk))
+    chunk = min(chunk, nSample)
+
+    PB = torch.empty((nCand, nSample), dtype=torch.float32, device=device)
+
+    draw_seconds = 0.0
+    reduce_seconds = 0.0
+    n_chunks = 0
+
+    executor = (
+        ThreadPoolExecutor(max_workers=n_draw_workers)
+        if n_draw_workers > 1 else None
+    )
+    try:
+        done = 0
+        chunk_index = 0
+        while done < nSample:
+            b = min(chunk, nSample - done)
+
+            if _PROFILE_SAMPLING:
+                _sync_device(torch, Q.device)
+                draw_start = time.perf_counter()
+
+            # One categorical draw per candidate row, parallelized over the
+            # sample dimension on the draws device.
+            idx = _parallel_multinomial(
+                Q_draw, b * nSeq,
+                base_root_seed + chunk_index * (nProc + 1),
+                n_draw_workers, executor,
+            ).reshape(nCand, b, nSeq).to(device)
+
+            if _PROFILE_SAMPLING:
+                _sync_device(torch, Q.device)
+                reduce_start = time.perf_counter()
+                draw_seconds += reduce_start - draw_start
+
+            counts = torch.zeros((nCand, b, Mmax), dtype=torch.float32, device=device)
+            counts.scatter_add_(2, idx, torch.ones_like(idx, dtype=torch.float32))
+
+            mask = counts > 0                          # sampled-unique categories
+            PP = counts / float(nSeq)                  # empirical frequencies
+            Pc = (mask * Qc).sum(dim=2)                # (nCand, b)
+            Pc_safe = Pc.clamp_min(1e-30).unsqueeze(2)
+            dd = 0.5 * (mask * (Qc / Pc_safe - PP).abs()).sum(dim=2)
+            Pb = (1.0 - beta) * Pc + beta * (1.0 - dd)
+            Pb = torch.where(Pc < 1e-5, torch.zeros_like(Pb), Pb)  # parity w/ scalar path
+
+            PB[:, done:done + b] = Pb
+            done += b
+            chunk_index += 1
+
+            if _PROFILE_SAMPLING:
+                _sync_device(torch, Q.device)
+                reduce_seconds += time.perf_counter() - reduce_start
+                n_chunks += 1
+    finally:
+        if executor is not None:
+            executor.shutdown()
+
+    if _PROFILE_SAMPLING:
+        total = draw_seconds + reduce_seconds
+        pct = (100.0 * draw_seconds / total) if total > 0 else 0.0
+        workers = n_draw_workers if _PARALLEL_DRAW else 1
+        print(
+            f" [sampling profile:batched] device={Q.device} "
+            f"nCand={nCand} categories={Mmax} nSeq={nSeq} "
+            f"nSample={nSample} chunk={chunk} chunks={n_chunks} draw_workers={workers}\n"
+            f"   draw (multinomial+H2D): {draw_seconds:.4f}s ({pct:.1f}%)  "
+            f"scatter+reduce: {reduce_seconds:.4f}s ({100.0 - pct:.1f}%)  "
+            f"total: {total:.4f}s"
+        )
+
+    PB, _ = torch.sort(PB, dim=1)
+    return PB.cpu().numpy()
+
+
+def _evaluatePairwiseCandidatesBatched(
+    candidates, S, osIn, nSample, samplingDevice, samplingSeed,
+    samplingBatchSize, sequenceBackend, sequenceDevice
+):
+    """Evaluate all pairwise-merge candidates for one round in a single batch.
+
+    candidates: list of dicts each carrying 'ii','jj','sm','P','SnumVis'
+    (P already merged + normP'd). Returns the same dicts augmented with
+    'pv','PBs','PbT'. Enumeration is parallelized across candidates; the
+    nSample null is stacked across candidates and run once on `device`.
+
+    Raises on any torch/MPS failure so the caller can fall back.
+    """
+
+    device = samplingDevice or "mps"
+
+    # 1. Enumerate each candidate's model-sequence probabilities (C releases the
+    #    GIL, so threads parallelize this). Degenerate candidates -> None.
+    def _enum(cand):
+        try:
+            return getUniqueSequenceProbabilitiesPOMMC(S, cand['P'])
+        except (ValueError, MemoryError):
+            return None
+
+    with ThreadPoolExecutor(max_workers=nProc) as ex:
+        probList = list(ex.map(_enum, candidates))
+
+    valid = [k for k, p in enumerate(probList) if p is not None]
+    if not valid:
+        raise RuntimeError("no candidate produced enumerable terminal sequences")
+
+    # 2. Batched null for the valid candidates, in one set of MPS dispatches.
+    gen = None
+    if samplingSeed is not None:
+        try:
+            gen = torch.Generator(device=device)
+            gen.manual_seed(int(samplingSeed))
+        except (RuntimeError, TypeError):
+            gen = None
+            torch.manual_seed(int(samplingSeed))
+
+    PBmat = _sampledPBFromProbabilitiesTorch(
+        [probList[k] for k in valid], len(osIn), nSample, device,
+        generator=gen, maxSampleChunk=samplingBatchSize,
+    )  # (len(valid), nSample), rows sorted ascending
+
+    # 3. Observed P_b + p-value per candidate. PbT is one set vs nSample null
+    #    sets, so keep the trusted scalar routine here.
+    results = []
+    row = 0
+    for k, cand in enumerate(candidates):
+        if probList[k] is None:
+            r = dict(cand)
+            r.update({'pv': 0.0, 'PBs': np.zeros(1), 'PbT': 0.0})
+            results.append(r)
+            continue
+        PbT = computeModifiedSequenceCompleteness(
+            S, cand['P'], osIn, sequenceBackend=sequenceBackend,
+            sequenceDevice=sequenceDevice
+        ) + 1e-10
+        PBs = PBmat[row]; row += 1
+        pv = np.searchsorted(PBs, PbT, side='right') / len(PBs)
+        r = dict(cand)
+        r.update({'pv': float(pv), 'PBs': PBs, 'PbT': float(PbT)})
+        results.append(r)
+
+    return results           
+                    
 def getMaxLenSeqs(osIn):
     maxLenSeqs = 0
     for ss in osIn:
@@ -1630,7 +2103,16 @@ def getPVSampledSeqsPOMM(
             )
         PBs = np.asarray([pb for PPBs in res for pb in PPBs])
     else:
-        raise ValueError("C-only build: only samplingBackend='c' is supported")
+        PBs = getModifiedSequenceCompletenessSamplingBackend(
+            S,
+            P,
+            N,
+            nSample,
+            samplingBackend=samplingBackend,
+            samplingDevice=samplingDevice,
+            samplingSeed=samplingSeed,
+            samplingBatchSize=samplingBatchSize,
+        )
     PBs = np.sort(PBs)
 
     print("getting PbT...")
@@ -2378,22 +2860,90 @@ def BWPOMMCParallel(
 
     backend_name = bwBackend.lower()
     if backend_name == "auto":
-        backend_name = "c"
-    if backend_name != "c":
-        raise ValueError("C-only build: bwBackend must be 'c' or 'auto'")
+        automatic = selectPOMMBackends()
+        backend_name = automatic["bwBackend"]
+        bwDevice = automatic["bwDevice"]
+        print(
+            f' Baum-Welch automatic backend: {backend_name} '
+            f'({automatic["reason"]})'
+        )
+    if backend_name == "c":
+        # Parallel computation of independent CPU runs.
+        pool = Pool(processes=nProc)
+        res = pool.map(BWPOMMCFun, Ps, chunksize=1)
+        pool.close()
+        pool.join()
+        fitted_Ps = np.asarray([P for (_, P, _) in res])
+        ML = np.asarray([ml for (ml, _, _) in res], dtype=float)
+        iterations = np.asarray([it for (_, _, it) in res], dtype=int)
+        print(
+            f' Baum-Welch backend: C; restarts={nRerun}; iterations='
+            f'{int(np.min(iterations))}-{int(np.max(iterations))}'
+        )
+    elif backend_name == "torch":
+        bw_result = baum_welch_restarts(
+            S,
+            osU,
+            osK,
+            np.asarray(initial_Ps, dtype=np.float32),
+            transition_support=np.asarray(initial_Ps) > 0.0,
+            p_tol=pTol,
+            max_iter=maxSteps,
+            device=bwDevice,
+        )
+        fitted_Ps = bw_result["P"]
+        ML = np.asarray(bw_result["log_likelihood"], dtype=float)
+        print(
+            f' Baum-Welch backend: torch ({bw_result["device"]}); '
+            f'restarts={nRerun}; iterations='
+            f'{int(np.min(bw_result["iterations"]))}-'
+            f'{int(np.max(bw_result["iterations"]))}'
+        )
+    elif backend_name == "cuda":
+        from pomm_cuda import baum_welch_cuda
 
-    # Parallel computation of independent CPU runs.
-    pool = Pool(processes=nProc)
-    res = pool.map(BWPOMMCFun, Ps, chunksize=1)
-    pool.close()
-    pool.join()
-    fitted_Ps = np.asarray([P for (_, P, _) in res])
-    ML = np.asarray([ml for (ml, _, _) in res], dtype=float)
-    iterations = np.asarray([it for (_, _, it) in res], dtype=int)
-    print(
-        f' Baum-Welch backend: C; restarts={nRerun}; iterations='
-        f'{int(np.min(iterations))}-{int(np.max(iterations))}'
-    )
+        bw_result = baum_welch_cuda(
+            S, osU, osK, np.asarray(initial_Ps, dtype=np.float32),
+            transition_support=np.asarray(initial_Ps) > 0.0,
+            p_tol=pTol, max_iter=maxSteps, device=bwDevice,
+            iterations_per_dispatch=bwIterationsPerDispatch,
+            memory_budget_bytes=bwMemoryBudgetBytes,
+        )
+        fitted_Ps = bw_result["P"]
+        ML = np.asarray(bw_result["log_likelihood"], dtype=float)
+        print(
+            f" Baum-Welch backend: CUDA ({bw_result['device']}); "
+            f"restarts={nRerun}; iterations="
+            f"{int(np.min(bw_result['iterations']))}-"
+            f"{int(np.max(bw_result['iterations']))}; restart_batch="
+            f"{bw_result['restart_batch_size']}"
+        )
+    elif backend_name == "metal":
+        from pomm_metal import baum_welch_metal
+
+        bw_result = baum_welch_metal(
+            S,
+            osU,
+            osK,
+            np.asarray(initial_Ps, dtype=np.float32),
+            transition_support=np.asarray(initial_Ps) > 0.0,
+            p_tol=pTol,
+            max_iter=maxSteps,
+            iterations_per_dispatch=bwIterationsPerDispatch,
+            memory_budget_bytes=bwMemoryBudgetBytes,
+        )
+        fitted_Ps = bw_result["P"]
+        ML = np.asarray(bw_result["log_likelihood"], dtype=float)
+        print(
+            f' Baum-Welch backend: Metal; restarts={nRerun}; iterations='
+            f'{int(np.min(bw_result["iterations"]))}-'
+            f'{int(np.max(bw_result["iterations"]))}; restart_batch='
+            f'{bw_result["restart_batch_size"]}; checkpoint_block='
+            f'{bw_result["checkpoint_block_size"]}; workspace/restart='
+            f'{bw_result["workspace_bytes_per_restart"] / (1024 ** 2):.3f} MiB'
+        )
+    else:
+        raise ValueError("bwBackend must be 'c', 'torch', 'cuda', 'metal', or 'auto'")
 
     finite = np.isfinite(ML)
 
@@ -2524,7 +3074,11 @@ def getSequenceProbModel(
     if len(osU) == 0:
         osU,osK,symU = getUniqueSequences(osIn)
     if sequenceBackend.lower() != "c":
-        raise ValueError("C-only build: only sequenceBackend='c' is supported")
+        PU = sequence_probabilities(
+            S, P, osU, end_required=True, backend=sequenceBackend,
+            device=sequenceDevice
+        )
+        return osU, PU
 
     PU = np.zeros(len(osU))
     for kk in range(len(osU)):
@@ -2559,7 +3113,11 @@ def computeSequenceCompleteness(
     if len(osU) == 0:
         osU,osK,symU = getUniqueSequences(osIn)
     if sequenceBackend.lower() != "c":
-        raise ValueError("C-only build: only sequenceBackend='c' is supported")
+        Ps = sequence_probabilities(
+            S, P, osU, end_required=True, backend=sequenceBackend,
+            device=sequenceDevice
+        )
+        return float(np.sum(Ps, dtype=np.float32)), Ps.tolist()
 
     Pc = 0
     Ps = []
