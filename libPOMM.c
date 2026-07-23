@@ -1463,7 +1463,256 @@ int sampleAliasMethod(AliasTableEntry *aliasTable, int N) {
         return aliasTable[idx].alias;
 }
 
-//END Alias method.  
+// Reentrant PRNG (xorshift32): thread-safe alternative to global rand()/srand().
+// State is carried in *s, so concurrent threads never share RNG state.
+static inline unsigned int xorshift32R(unsigned int *s) {
+    unsigned int x = *s;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *s = x;
+    return x;
+}
+
+// Reentrant alias sampler: same logic as sampleAliasMethod but draws its
+// uniform from a per-call RNG state instead of global rand().
+static int sampleAliasMethodR(AliasTableEntry *aliasTable, int N, unsigned int *s) {
+    double u = (double) xorshift32R(s) / 4294967296.0;   // [0, 1)
+    double r = u * N;
+
+    int idx = (int) r;
+    if (idx < 0) idx = 0;
+    if (idx >= N) idx = N - 1;
+
+    double prob = r - idx;
+
+    if (prob < aliasTable[idx].prob)
+        return idx;
+    else
+        return aliasTable[idx].alias;
+}
+
+// Enumeration-free, reentrant modified-sequence-completeness sampler.
+// Mirrors getModifiedSequenceCompletenessSamplingModelCSR_C's inner loop
+// exactly (same alias table, same Pc/dd/Pb formula) but takes the already
+// enumerated probabilities pU, so enumeration is done once by the caller, and
+// uses a per-call RNG state so many calls can run concurrently on threads.
+void sampleModifiedCompletenessFromProbs_C(
+    double *pU,
+    int nU,
+    int nSeqs,
+    int nSample,
+    double beta,
+    unsigned int seed,
+    double *PBs
+)
+{
+    if (nU <= 0 || nSeqs <= 0 || nSample <= 0) {
+        return;
+    }
+
+    int *counts = (int *) malloc(nU * sizeof(int));
+    AliasTableEntry *aliasTable =
+        (AliasTableEntry *) malloc(nU * sizeof(AliasTableEntry));
+
+    if (!counts || !aliasTable) {
+        free(counts);
+        free(aliasTable);
+        return;
+    }
+
+    initializeAliasTable(pU, nU, aliasTable);
+
+    // xorshift32 must not be seeded with 0; substitute a fixed nonzero constant.
+    unsigned int st = seed ? seed : 0x9E3779B9u;
+
+    for (int isam = 0; isam < nSample; isam++) {
+        for (int i = 0; i < nU; i++) {
+            counts[i] = 0;
+        }
+
+        for (int iseq = 0; iseq < nSeqs; iseq++) {
+            int k = sampleAliasMethodR(aliasTable, nU, &st);
+
+            if (k >= 0 && k < nU) {
+                counts[k] += 1;
+            }
+        }
+
+        double Pc = 0.0;
+
+        for (int i = 0; i < nU; i++) {
+            if (counts[i] > 0) {
+                Pc += pU[i];
+            }
+        }
+
+        double dd = 0.0;
+
+        if (Pc > 0.0) {
+            for (int i = 0; i < nU; i++) {
+                if (counts[i] > 0) {
+                    double ps = (double) counts[i] / (double) nSeqs;
+                    double pm = pU[i] / Pc;
+                    dd += 0.5 * fabs(ps - pm);
+                }
+            }
+        }
+
+        PBs[isam] = (1.0 - beta) * Pc + beta * (1.0 - dd);
+    }
+
+    free(counts);
+    free(aliasTable);
+}
+
+// Build the alias table into two parallel arrays (alias index + prob) instead
+// of an array of structs, so the caller can build it ONCE and share the two
+// read-only arrays across sampling threads.  Identical construction to
+// initializeAliasTable, so it yields the same table values.
+void buildAliasTableArrays_C(double *pU, int nU, int *aliasOut, double *probOut) {
+    if (nU <= 0) return;
+
+    double *prob = (double *) malloc(nU * sizeof(double));
+    int *small = (int *) malloc(nU * sizeof(int));
+    int *large = (int *) malloc(nU * sizeof(int));
+
+    if (!prob || !small || !large) {
+        free(prob);
+        free(small);
+        free(large);
+        return;
+    }
+
+    int smallCount = 0, largeCount = 0;
+
+    for (int i = 0; i < nU; ++i) {
+        aliasOut[i] = i;
+        probOut[i] = 1.0;
+
+        prob[i] = pU[i] * nU;
+        if (prob[i] < 1.0)
+            small[smallCount++] = i;
+        else
+            large[largeCount++] = i;
+    }
+
+    while (smallCount > 0 && largeCount > 0) {
+        int less = small[--smallCount];
+        int more = large[--largeCount];
+
+        probOut[less] = prob[less];
+        aliasOut[less] = more;
+
+        prob[more] = (prob[more] + prob[less]) - 1.0;
+        if (prob[more] < 1.0)
+            small[smallCount++] = more;
+        else
+            large[largeCount++] = more;
+    }
+
+    while (largeCount > 0) {
+        int idx = large[--largeCount];
+        probOut[idx] = 1.0;
+        aliasOut[idx] = idx;
+    }
+
+    while (smallCount > 0) {
+        int idx = small[--smallCount];
+        probOut[idx] = 1.0;
+        aliasOut[idx] = idx;
+    }
+
+    free(small);
+    free(large);
+    free(prob);
+}
+
+// Reentrant alias draw over parallel arrays (shared, read-only across threads).
+static int sampleAliasArraysR(const int *alias, const double *prob,
+                              int N, unsigned int *s) {
+    double u = (double) xorshift32R(s) / 4294967296.0;   // [0, 1)
+    double r = u * N;
+
+    int idx = (int) r;
+    if (idx < 0) idx = 0;
+    if (idx >= N) idx = N - 1;
+
+    double p = r - idx;
+
+    if (p < prob[idx])
+        return idx;
+    else
+        return alias[idx];
+}
+
+// Sample the modified-sequence-completeness null from a PREBUILT alias table
+// (parallel arrays) shared read-only across threads.  Only the small per-call
+// counts buffer is thread-local; alias/prob/pU are shared.  Same Pc/dd/Pb
+// formula as sampleModifiedCompletenessFromProbs_C.
+void sampleFromAliasArrays_C(
+    const int *alias,
+    const double *prob,
+    double *pU,
+    int nU,
+    int nSeqs,
+    int nSample,
+    double beta,
+    unsigned int seed,
+    double *PBs
+)
+{
+    if (nU <= 0 || nSeqs <= 0 || nSample <= 0) {
+        return;
+    }
+
+    int *counts = (int *) malloc(nU * sizeof(int));
+    if (!counts) {
+        return;
+    }
+
+    unsigned int st = seed ? seed : 0x9E3779B9u;
+
+    for (int isam = 0; isam < nSample; isam++) {
+        for (int i = 0; i < nU; i++) {
+            counts[i] = 0;
+        }
+
+        for (int iseq = 0; iseq < nSeqs; iseq++) {
+            int k = sampleAliasArraysR(alias, prob, nU, &st);
+
+            if (k >= 0 && k < nU) {
+                counts[k] += 1;
+            }
+        }
+
+        double Pc = 0.0;
+
+        for (int i = 0; i < nU; i++) {
+            if (counts[i] > 0) {
+                Pc += pU[i];
+            }
+        }
+
+        double dd = 0.0;
+
+        if (Pc > 0.0) {
+            for (int i = 0; i < nU; i++) {
+                if (counts[i] > 0) {
+                    double ps = (double) counts[i] / (double) nSeqs;
+                    double pm = pU[i] / Pc;
+                    dd += 0.5 * fabs(ps - pm);
+                }
+            }
+        }
+
+        PBs[isam] = (1.0 - beta) * Pc + beta * (1.0 - dd);
+    }
+
+    free(counts);
+}
+
+//END Alias method.
 
 
 // useful data structures and functionns used in constructNGramPOMMC

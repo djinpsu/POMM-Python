@@ -1468,6 +1468,43 @@ lib.getUniqueSeqProbsPOMM_CSR.restype = ctypes.POINTER(ctypes.c_double)
 lib.freeArray.argtypes = [ctypes.POINTER(ctypes.c_double)]
 lib.freeArray.restype = None
 
+# Reentrant, enumeration-free sampler: takes pre-enumerated unique-sequence
+# probabilities so enumeration happens once, and uses a per-call RNG state so it
+# is safe to run concurrently on threads.
+lib.sampleModifiedCompletenessFromProbs_C.argtypes = [
+    ctypes.POINTER(ctypes.c_double),  # pU (length nU)
+    ctypes.c_int,                     # nU
+    ctypes.c_int,                     # nSeqs
+    ctypes.c_int,                     # nSample
+    ctypes.c_double,                  # beta
+    ctypes.c_uint,                    # seed
+    ctypes.POINTER(ctypes.c_double),  # PBs out (length nSample)
+]
+lib.sampleModifiedCompletenessFromProbs_C.restype = None
+
+# Build the alias table once (parallel arrays) and share it read-only across
+# sampling threads, so the O(nU) table build isn't repeated per thread.
+lib.buildAliasTableArrays_C.argtypes = [
+    ctypes.POINTER(ctypes.c_double),  # pU
+    ctypes.c_int,                     # nU
+    ctypes.POINTER(ctypes.c_int),     # aliasOut
+    ctypes.POINTER(ctypes.c_double),  # probOut
+]
+lib.buildAliasTableArrays_C.restype = None
+
+lib.sampleFromAliasArrays_C.argtypes = [
+    ctypes.POINTER(ctypes.c_int),     # alias (shared)
+    ctypes.POINTER(ctypes.c_double),  # prob (shared)
+    ctypes.POINTER(ctypes.c_double),  # pU (shared)
+    ctypes.c_int,                     # nU
+    ctypes.c_int,                     # nSeqs
+    ctypes.c_int,                     # nSample
+    ctypes.c_double,                  # beta
+    ctypes.c_uint,                    # seed
+    ctypes.POINTER(ctypes.c_double),  # PBs out
+]
+lib.sampleFromAliasArrays_C.restype = None
+
 
 def getUniqueSequenceProbabilitiesPOMMC(S, P):
     """Enumerate model-sequence probabilities once for a sampling backend."""
@@ -1511,6 +1548,96 @@ def getUniqueSequenceProbabilitiesPOMMC(S, P):
     probabilities = np.asarray(probabilities, dtype=np.float32)
     probabilities /= probabilities.sum(dtype=np.float32)
     return probabilities
+
+
+def _enumerateSeqProbsRawC(S, P):
+    """Enumerate the raw (un-normalized) unique terminal-sequence probabilities.
+
+    Same C enumeration as getUniqueSequenceProbabilitiesPOMMC, but returns the
+    raw float64 probabilities (seqP[1..nU]) exactly as the legacy C sampler used
+    them internally -- so sampling from these reproduces the old statistic.
+    """
+    S = np.ascontiguousarray(S, dtype=np.int32)
+    N = len(S)
+    P = np.asarray(P, dtype=np.float64).reshape((N, N))
+    P_csr = sparse.csr_matrix(P, dtype=np.float64)
+    P_csr.sum_duplicates()
+    P_csr.eliminate_zeros()
+    P_csr.sort_indices()
+
+    rowPtr = np.ascontiguousarray(P_csr.indptr, dtype=np.int32)
+    colInd = np.ascontiguousarray(P_csr.indices, dtype=np.int32)
+    val = np.ascontiguousarray(P_csr.data, dtype=np.float64)
+    matrix = CSRMatrixC(
+        N,
+        int(P_csr.nnz),
+        rowPtr.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+        colInd.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+        val.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+    )
+
+    result_ptr = lib.getUniqueSeqProbsPOMM_CSR(
+        ctypes.c_int(N),
+        S.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+        ctypes.byref(matrix),
+    )
+    if not result_ptr:
+        raise MemoryError("C sequence-probability enumeration failed")
+    try:
+        n_unique = int(result_ptr[0])
+        if n_unique <= 0:
+            raise ValueError("the model has no enumerable terminal sequences")
+        pU = np.ctypeslib.as_array(result_ptr, shape=(n_unique + 1,))[1:].copy()
+    finally:
+        lib.freeArray(result_ptr)
+    return np.ascontiguousarray(pU, dtype=np.float64)
+
+
+def _sampleModifiedCompletenessThreaded(S, P, nSeqs, nSample, samplingSeed=None):
+    """Torchless Pb-null sampler: enumerate ONCE, then sample across threads.
+
+    Replaces the multiprocessing.Pool approach (which re-enumerated in every
+    worker and paid process-spawn/pickle overhead).  The C sampler releases the
+    GIL and uses a per-call RNG state, so the shared read-only pU is sampled in
+    true parallel with no re-enumeration and no interpreter re-import.
+    """
+    if nSample <= 0:
+        return np.zeros(0, dtype=np.float64)
+
+    pU = _enumerateSeqProbsRawC(S, P)                 # ONE enumeration
+    nU = len(pU)
+    pU_ptr = pU.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+
+    # Build the alias table ONCE; threads share these two read-only arrays.
+    alias = np.empty(nU, dtype=np.int32)
+    prob = np.empty(nU, dtype=np.float64)
+    lib.buildAliasTableArrays_C(
+        pU_ptr, nU,
+        alias.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+        prob.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+    )
+    alias_ptr = alias.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+    prob_ptr = prob.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+
+    NS = computeNumTasksProc(nSample, nProc)          # per-thread sample counts
+    workerSeeds = _cSamplingWorkerSeeds(nProc, samplingSeed)
+    outs = [np.empty(int(NS[k]), dtype=np.float64) for k in range(nProc)]
+    beta = ctypes.c_double(betaTotalVariationDistance)
+
+    def worker(k):
+        if NS[k] <= 0:
+            return
+        lib.sampleFromAliasArrays_C(
+            alias_ptr, prob_ptr, pU_ptr, nU, int(nSeqs), int(NS[k]), beta,
+            ctypes.c_uint(workerSeeds[k] & 0xFFFFFFFF),
+            outs[k].ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        )
+
+    with ThreadPoolExecutor(max_workers=nProc) as ex:
+        list(ex.map(worker, range(nProc)))
+
+    return np.concatenate([o for o in outs if o.size])
+
 
 def _cSamplingWorkerSeeds(nWorkers, samplingSeed=None):
     """Create independent C RNG seeds, deterministically when requested."""
@@ -1609,47 +1736,23 @@ def _evaluatePairwiseCandidatesC(
     candidates, S, osIn, nSample, *, samplingSeed=None,
     sequenceBackend="c", sequenceDevice=None
 ):
-    """Evaluate all pairwise-merge candidates for one round through ONE pool.
+    """Evaluate all pairwise-merge candidates for one round (torchless).
 
-    getPVSampledSeqsPOMM already splits a single candidate's nSample draws across
-    nProc processes, so a round of nCand candidates otherwise creates nCand pools
-    back to back.  Here every (candidate, worker-chunk) sampling task is scheduled
-    through a single Pool, cutting pool-creation overhead and keeping all cores
-    busy across candidates.
-
-    Results are bit-identical to the per-candidate getPVSampledSeqsPOMM loop:
-    each candidate draws its own per-worker seeds exactly as it would alone
-    (_cSamplingWorkerSeeds called once per candidate), the nSample split is the
-    same, and PbT/pv are computed with the same formulas.
+    Each candidate is enumerated once and its Pb null is sampled across threads
+    via _sampleModifiedCompletenessThreaded -- no per-worker re-enumeration and
+    no process-spawn/pickle overhead.  pv/PbT use the same formulas as
+    getPVSampledSeqsPOMM.
     """
     N = len(osIn)
-    NS = computeNumTasksProc(nSample, nProc)
-
-    print("\n Computing pv. Sampling (batched over candidates)...")
-
-    # Build every (candidate, worker-chunk) task up front.  owner[i] records
-    # which candidate task i belongs to so results reassemble in order.
-    tasks = []
-    owner = []
-    for ci, cand in enumerate(candidates):
-        workerSeeds = _cSamplingWorkerSeeds(nProc, samplingSeed)
-        for k in range(nProc):
-            tasks.append([S, cand["P"], N, NS[k], workerSeeds[k]])
-            owner.append(ci)
-
-    with Pool(processes=nProc) as pool:
-        res = pool.map(
-            getModifiedSequenceCompletenessSamplingModelC, tasks, chunksize=1
-        )
-
-    perCand = [[] for _ in candidates]
-    for out, ci in zip(res, owner):
-        perCand[ci].append(out)
+    print("\n Computing pv. Sampling (threaded, per candidate)...")
 
     results = []
-    for ci, cand in enumerate(candidates):
-        PBs = np.sort(np.asarray([pb for part in perCand[ci] for pb in part]))
-        print("getting PbT...")
+    for cand in candidates:
+        PBs = np.sort(
+            _sampleModifiedCompletenessThreaded(
+                S, cand["P"], N, nSample, samplingSeed=samplingSeed
+            )
+        )
         PbT = computeModifiedSequenceCompleteness(
             S, cand["P"], osIn,
             sequenceBackend=sequenceBackend, sequenceDevice=sequenceDevice,
@@ -1672,16 +1775,11 @@ def getPVSampledSeqsPOMM(
     print("\n Computing pv. Sampling...")
 
     if samplingBackend.lower() == "c":
-        NS = computeNumTasksProc(nSample, nProc)
-        workerSeeds = _cSamplingWorkerSeeds(nProc, samplingSeed)
-        Params = [
-            [S, P, N, NS[ii], workerSeeds[ii]] for ii in range(nProc)
-        ]
-        with Pool(processes=nProc) as pool:
-            res = pool.map(
-                getModifiedSequenceCompletenessSamplingModelC, Params, chunksize=1
-            )
-        PBs = np.asarray([pb for PPBs in res for pb in PPBs])
+        # Torchless: enumerate once, sample across threads (no per-worker
+        # re-enumeration, no process spawn/pickle overhead).
+        PBs = _sampleModifiedCompletenessThreaded(
+            S, P, N, nSample, samplingSeed=samplingSeed
+        )
     else:
         raise ValueError("C-only build: only samplingBackend='c' is supported")
     PBs = np.sort(PBs)
@@ -1719,6 +1817,10 @@ def getPVSampledSeqsPOMMTotalVariationDistance(S, P, osIn,nSample = 10000):
     N = len(osIn)
     Params = [[S, P, N, NS[ii]] for ii in range(nProc)]
 
+    # LEGACY multiprocessing path: total-variation statistic, NOT the default
+    # NGramPOMMSearch flow (that uses the torchless threaded
+    # _sampleModifiedCompletenessThreaded).  Left on Pool intentionally; convert
+    # to the threaded sampler only if this statistic is put back into use.
     pool = Pool(processes = nProc)
     res = pool.map(getTotalVariationDistanceSamplingModel,Params,chunksize = 1)
     pool.close()
@@ -1753,6 +1855,9 @@ def generateSequencePOMMFun(Params):
 def generateSequenceSamples(S,P,N,nSample=10000):
     NS = computeNumTasksProc(nSample,nProc)
     Params = [[S, P, N, NS[ii]] for ii in range(nProc)]
+    # LEGACY multiprocessing path: sequence generation for the total-variation
+    # statistic, NOT the default NGramPOMMSearch flow.  Would need a reentrant C
+    # sequence generator to move onto threads; left on Pool while unused.
     pool = Pool(processes = nProc)
     res = pool.map(generateSequencePOMMFun,Params,chunksize = 1)
     pool.close()
@@ -1820,6 +1925,9 @@ def computePsStatsInSamples(osTSamples,ss,Ps0):
         ii = jj             
     Params = [[osTS[ii], ss] for ii in range(nProc)]
 
+    # LEGACY multiprocessing path: total-variation statistic, NOT the default
+    # NGramPOMMSearch flow.  computePsStatsInSamplesFun is pure-Python, so this
+    # one could move to threads trivially if the statistic is put back into use.
     pool = Pool(processes = nProc)
     res = pool.map(computePsStatsInSamplesFun,Params,chunksize = 1)
     pool.close()
@@ -2436,6 +2544,9 @@ def BWPOMMCParallel(
         raise ValueError("C-only build: bwBackend must be 'c' or 'auto'")
 
     # Parallel computation of independent CPU runs.
+    # LEGACY multiprocessing path: Baum-Welch, which is DEPRECATED (inference is
+    # now entirely state-merging; see the 2026-07-22 changelog) and NOT reached
+    # by the default NGramPOMMSearch flow.  Left on Pool intentionally.
     pool = Pool(processes=nProc)
     res = pool.map(BWPOMMCFun, Ps, chunksize=1)
     pool.close()
@@ -4130,6 +4241,9 @@ def PBRankPOMM(osIn, ngramStart = 1, fnSave=''):
                 for irun in range(nProc):
                     P = normP(rand(N,N))
                     Ps.append([osU,osK,S,P,pTol,maxSteps])
+                # LEGACY multiprocessing path: Baum-Welch inside PBRankPOMM, an
+                # alternative top-level entry (default is testNGramPOMMSearch).
+                # BW is deprecated; left on Pool intentionally.
                 pool = Pool(processes = nProc)
                 res = pool.map(BWPOMMCFun,Ps,chunksize = 1)
                 pool.close()

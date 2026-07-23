@@ -175,7 +175,7 @@ void FindUniqueSequencesC_CSR(
 //seqP[0] is the sequence length. 
 double *getUniqueSeqProbsPOMM_CSR(int N, int *S, CSRMatrix *A);
 
-//find modified sequence completeness distribution. the size of set is nSeqs, P is in the compressed CSR format. 
+//find modified sequence completeness distribution. the size of set is nSeqs, P is in the compressed CSR format.
 void getModifiedSequenceCompletenessSamplingModelCSR_C(
     int nSeqs,
     int N,
@@ -183,11 +183,45 @@ void getModifiedSequenceCompletenessSamplingModelCSR_C(
     int nnz,
     int *rowPtr,    // CSR row pointer, length N + 1
     int *colInd,    // CSR column indices, length nnz
-    double *val,    // CSR nonzero values, length nnz    
+    double *val,    // CSR nonzero values, length nnz
     int nSample,
     double *PBs,
     double beta,
     int randSeed
+);
+
+//Reentrant, enumeration-free variant of the modified-sequence-completeness
+//sampler.  The caller enumerates the unique-sequence probabilities pU once
+//(as returned in getUniqueSeqProbsPOMM_CSR's seqP[1..nU]) and passes them in,
+//so enumeration is NOT repeated per worker.  Uses a per-call RNG state (no
+//global rand/srand), so callers may run many of these concurrently on threads.
+void sampleModifiedCompletenessFromProbs_C(
+    double *pU,         // unique-sequence probabilities, length nU
+    int nU,             // number of unique sequences
+    int nSeqs,          // sequences drawn per Monte-Carlo sample
+    int nSample,        // number of samples to draw
+    double beta,        // total-variation weight
+    unsigned int seed,  // RNG seed for this call
+    double *PBs         // output distribution, length nSample
+);
+
+//Build the alias table ONCE into two parallel arrays (alias index + prob) so
+//it can be shared read-only across sampling threads (see sampleFromAliasArrays_C).
+void buildAliasTableArrays_C(double *pU, int nU, int *aliasOut, double *probOut);
+
+//Sample the modified-sequence-completeness null from a prebuilt alias table
+//(parallel arrays), shared read-only across threads.  Reentrant (per-call RNG
+//state); only the small counts buffer is thread-local.
+void sampleFromAliasArrays_C(
+    const int *alias,   // prebuilt alias indices, length nU
+    const double *prob, // prebuilt alias probabilities, length nU
+    double *pU,         // unique-sequence probabilities, length nU
+    int nU,             // number of unique sequences
+    int nSeqs,          // sequences drawn per Monte-Carlo sample
+    int nSample,        // number of samples to draw
+    double beta,        // total-variation weight
+    unsigned int seed,  // RNG seed for this call
+    double *PBs         // output distribution, length nSample
 );
 
 
