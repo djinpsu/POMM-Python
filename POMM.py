@@ -644,6 +644,22 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=(1.0, 0.1, 0.1), Pcut=0
         bwBackend, bwDevice, announce=True
     )
 
+    if samplingSeed is None:
+        now = time.time_ns()
+        samplingSeed = int((now ^ (now >> 32) ^ os.getpid()) & 0xFFFFFFFF)
+        print(f'Sampling random seed (current time): {samplingSeed}')
+    else:
+        samplingSeed = int(samplingSeed)
+        print(f'Sampling random seed: {samplingSeed}')
+
+    if bwSeed is None:
+        now = time.time_ns()
+        bwSeed = int((now ^ (now >> 32) ^ os.getpid()) & 0xFFFFFFFF)
+        print(f'Baum-Welch random seed (current time): {bwSeed}')
+    else:
+        bwSeed = int(bwSeed)
+        print(f'Baum-Welch random seed: {bwSeed}')
+
     print('Constructing POMM with nGram transition diagram...')
     flag = 0
     maxNG = 200
@@ -652,7 +668,10 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=(1.0, 0.1, 0.1), Pcut=0
         raise ValueError("pValue must be between 0 and 1")
     if not isinstance(ngramStart, int) or not 1 <= ngramStart < maxNG:
         raise ValueError(f"ngramStart must be an integer in [1, {maxNG})")
-
+        
+    pValue_intermediate = min(1.0, pValue + 0.01)
+    print(f'\nIntermediate pValue_intermediate = {pValue_intermediate}. Final pValue: {pValue}')
+        
     ###
     # (1) find the degree of the N-gram model
     ###
@@ -682,8 +701,6 @@ def NGramPOMMSearch(osIn, pValue=pValue, stateMergeParam=(1.0, 0.1, 0.1), Pcut=0
         sm_markov, sm_merged, sm_deleted = [], [], []
         pairwise_complete = False
 
-    pValue_intermediate = min(1.0, pValue + 0.01)
-    print(f'\nIntermediate pValue_intermediate = {pValue_intermediate}. Final pValue: {pValue}')
 
     if ngFinal == 0:
         ngStart0 = ngStart
@@ -2518,19 +2535,21 @@ def BWPOMMCParallel(
     initial_Ps = []
     if not isinstance(nRerun, (int, np.integer)) or nRerun <= 0:
         raise ValueError("nRerun must be a positive integer")
-    rng = np.random.default_rng(bwSeed) if bwSeed is not None else None
+    if bwSeed is None:
+        now = time.time_ns()
+        bwSeed = int((now ^ (now >> 32) ^ os.getpid()) & 0xFFFFFFFF)
+        print(f'Baum-Welch random seed (current time): {bwSeed}')
+    else:
+        bwSeed = int(bwSeed)
+    rng = np.random.default_rng(bwSeed)
     for irun in range(nRerun):
         # ---- bigram + jitter initialization of P -------------------------------
         # Fills P from symbol-bigram statistics and breaks same-symbol degeneracy.
         # Respects P's incoming nonzero pattern as the candidate support; pass an
         # all-zero P for full connectivity. Seeded off randSeed (independent of the
         # C RNG) so each restart gets different jitter.
-        if rng is None:
-            P = normP(rand(N, N))
-            randSeed = int(rand() * 100000)
-        else:
-            P = normP(rng.random((N, N)))
-            randSeed = int(rng.integers(0, 100000))
+        P = normP(rng.random((N, N)))
+        randSeed = int(rng.integers(0, 100000))
 
         P = initPBigramJitter(osU, osK, S, N, P, jitterAmp=0.2, edgeFloor=1e-3,
                               randSeed=randSeed)
@@ -4627,14 +4646,17 @@ def testGetNumericalSequencesNonRepeatCreateSyllableLabels():
         print(seq, nseq)
         
 def testNGramPOMMSearch(
-    samplingBackend="auto", samplingDevice=None, samplingSeed=12345,
+    samplingBackend="auto", samplingDevice=None, samplingSeed=None,
     nSample=10000, saveResults=True, makePlot=True,
     openPlot=True, sequenceBackend="auto", sequenceDevice=None,
-    bwBackend="auto", bwDevice=None, bwSeed=12345, bwMaxSteps=10000,
+    bwBackend="auto", bwDevice=None, bwSeed=None, bwMaxSteps=10000,
     bwPTol=1e-6, bwIterationsPerDispatch=50, bwMemoryBudgetBytes=None
 ):
     
-    filename = '0mA_annot_observed_sequences.txt'
+    #filename = '0mA_annot_observed_sequences.txt'
+    #filename = 'baseline_subset_2.txt'
+    filename = 'baseline_subset_1.txt'		
+
     filenameSave = f'{filename}.POMM.dat'
 
     print(f'\nLoading sequeces from {filename}')
